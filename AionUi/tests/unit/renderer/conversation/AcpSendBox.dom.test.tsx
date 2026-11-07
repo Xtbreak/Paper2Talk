@@ -34,8 +34,10 @@ const {
   draftContentRef,
   messageWarningMock,
   stopInvokeMock,
+  usePaperTalkMock,
 } = vi.hoisted(() => ({
   sendMessageInvokeMock: vi.fn(),
+  usePaperTalkMock: vi.fn(),
   addOrUpdateMessageMock: vi.fn(),
   resetStateMock: vi.fn(),
   emitterEmitMock: vi.fn(),
@@ -77,6 +79,8 @@ const {
   messageWarningMock: vi.fn(),
   stopInvokeMock: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock('@/renderer/pages/conversation/PaperTalk', () => ({ usePaperTalk: usePaperTalkMock }));
 
 vi.mock('@/common', () => ({
   ipcBridge: {
@@ -343,6 +347,7 @@ const makeMessageState = (): UseAcpMessageReturn => ({
 describe('AcpSendBox', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    usePaperTalkMock.mockReturnValue(null);
     isMobileMock.current = false;
     mobileActionSheetEntries.current = [];
     runtimeViewMock.hydrated = true;
@@ -361,6 +366,39 @@ describe('AcpSendBox', () => {
       reload: vi.fn(),
       setConfigOption: vi.fn(),
     });
+  });
+
+  it('prepares a report interruption before sending through the native composer', async () => {
+    let release!: () => void;
+    const prepare = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    usePaperTalkMock.mockReturnValue({ prepare });
+    runtimeViewMock.isProcessing = true;
+    sendMessageInvokeMock.mockResolvedValue({ turn_id: 'next', runtime: {}, msg_id: 'message' });
+    render(<AcpSendBox conversation_id='conv-1' backend='codex' messageState={makeMessageState()} />);
+    await act(async () => {
+      screen.getByRole('button', { name: 'send' }).click();
+    });
+    expect(prepare).toHaveBeenCalledWith('Hello', []);
+    expect(sendMessageInvokeMock).not.toHaveBeenCalled();
+    await act(async () => release());
+    expect(sendMessageInvokeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ input: 'Hello', conversation_id: 'conv-1' })
+    );
+  });
+
+  it('keeps attachments and does not send when report preparation fails', async () => {
+    usePaperTalkMock.mockReturnValue({ prepare: vi.fn().mockRejectedValue(new Error('report conflict')) });
+    render(<AcpSendBox conversation_id='conv-1' backend='codex' messageState={makeMessageState()} />);
+    await act(async () => {
+      screen.getByRole('button', { name: 'send' }).click();
+    });
+    expect(sendMessageInvokeMock).not.toHaveBeenCalled();
+    expect(clearFilesMock).not.toHaveBeenCalled();
   });
 
   it('resets ACP loading state when sendMessage fails before any stream error arrives', async () => {

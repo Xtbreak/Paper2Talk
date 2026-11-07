@@ -1,8 +1,8 @@
-产品经理工作台 / Product Manager Workbench
+研报 / Paper2Talk
 
 Product design and maintenance: Xtbreak (@Xtbreak)
 Maintainer: https://github.com/Xtbreak
-Repository: https://github.com/Xtbreak/product-manager-workbench
+Repository: https://github.com/Xtbreak/Paper2Talk
 
 Copyright 2026 Xtbreak
 This notice applies only to original additions and modifications in this
@@ -23,5 +23,9 @@ retained. Other bundled third-party notices and licenses continue to apply.
 This root NOTICE belongs to this repository. It is not a NOTICE file
 supplied by either upstream project.
 
-The product name and presentation identify Product Manager Workbench.
+The product name and presentation identify Paper2Talk.
 No upstream endorsement or third-party trademark rights are claimed.
+
+Paper2Talk includes the PDF extraction script and slide-distillation guide from
+smallSheep123/paper-skills, revision d166c26b1e9ec2c3357f18371a01deb224a42f8d.
+Copyright (c) 2026 smallSheep123. The MIT license is included alongside those files.

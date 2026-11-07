@@ -113,6 +113,10 @@ pub trait SessionBackend: Send + Sync {
         Vec::new()
     }
 
+    fn pending_permission_input(&self, _request_id: &str) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Force-terminate this session's process tree NOW (the `UserCancelTimeout`
     /// force-kill path), WITHOUT waiting for the last `Arc<dyn SessionBackend>`
     /// to drop. The Drop-driven reap needs the last handle released to fire

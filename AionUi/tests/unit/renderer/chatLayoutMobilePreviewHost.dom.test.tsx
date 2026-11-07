@@ -15,13 +15,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // non-project conversations already render.
 
 let mockIsMobile = false;
+let mockPreviewOpen = true;
 
 vi.mock('@/renderer/hooks/context/LayoutContext', () => ({
   useLayoutContext: () => ({ isMobile: mockIsMobile }),
 }));
 
 vi.mock('@/renderer/pages/conversation/Preview', () => ({
-  usePreviewContext: () => ({ isOpen: true }),
+  usePreviewContext: () => ({ isOpen: mockPreviewOpen }),
   PreviewPanel: () => <div data-testid='preview-panel'>preview</div>,
 }));
 
@@ -90,6 +91,25 @@ function renderChatLayout(previewHosted: boolean) {
 describe('ChatLayout mobile preview host fallback', () => {
   afterEach(() => {
     mockIsMobile = false;
+    mockPreviewOpen = true;
+  });
+
+  it('keeps native chat mounted when the report preview is toggled', () => {
+    mockPreviewOpen = false;
+    const { rerender } = render(
+      <ChatLayout sider={null} workspaceEnabled={false} previewPanel={<div>report preview</div>} previewOpen>
+        <input aria-label='native composer' defaultValue='keep my draft' />
+      </ChatLayout>
+    );
+    const composer = screen.getByLabelText('native composer');
+    expect(screen.getByText('report preview')).toBeInTheDocument();
+    rerender(
+      <ChatLayout sider={null} workspaceEnabled={false} previewPanel={<div>report preview</div>} previewOpen={false}>
+        <input aria-label='native composer' defaultValue='keep my draft' />
+      </ChatLayout>
+    );
+    expect(screen.getByLabelText('native composer')).toBe(composer);
+    expect(screen.queryByText('report preview')).not.toBeInTheDocument();
   });
 
   it('renders the preview overlay on mobile even for hoisted (project) conversations', () => {

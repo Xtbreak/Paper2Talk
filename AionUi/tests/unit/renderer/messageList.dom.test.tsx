@@ -264,6 +264,101 @@ describe('MessageList', () => {
     useTeamPermissionMock.mockReturnValue(null);
   });
 
+  it('places report choices inside the native message scroller after the transcript', () => {
+    render(<MessageList endSlot={<div>paper choices</div>} />, {
+      wrapper: ({ children }) => <Wrapper>{children}</Wrapper>,
+    });
+    expect(screen.getByTestId('message-list-scroller')).toContainElement(screen.getByText('paper choices'));
+  });
+
+  it('replaces the welcome with the first message while retaining report results', () => {
+    const user = { ...createTextMessage(), position: 'right', content: { content: '你好' } } as IMessageText;
+    render(
+      <>
+        <MessageList emptySlot={<div>Welcome to the conversation</div>} endSlot={<div>Report results</div>} />
+        <ReplaceMessagesButton messages={[user]} />
+      </>,
+      { wrapper: ({ children }) => <Wrapper messages={[]}>{children}</Wrapper> }
+    );
+    expect(screen.getByText('Welcome to the conversation')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('replace messages'));
+    expect(screen.queryByText('Welcome to the conversation')).not.toBeInTheDocument();
+    expect(screen.getByText('Report results')).toBeInTheDocument();
+  });
+
+  it('keeps paper talk replies while hiding tool steps and their preceding narration', () => {
+    const messages: TMessage[] = [
+      { ...createTextMessage(), id: 'user', position: 'right', content: { content: '你好' }, created_at: 1 },
+      { ...createTextMessage(), id: 'process', content: { content: 'I am reading SKILL.md' }, created_at: 2 },
+      { ...createAcpToolCall(), created_at: 3 },
+      { ...createTextMessage(), id: 'reply', content: { content: 'What is your research direction?' }, created_at: 4 },
+      { ...createTextMessage(), id: 'reply-extra', content: { content: 'You can also attach papers.' }, created_at: 5 },
+    ];
+    render(<MessageList compactProcess />, {
+      wrapper: ({ children }) => <Wrapper messages={messages}>{children}</Wrapper>,
+    });
+    expect(screen.queryByText('I am reading SKILL.md')).not.toBeInTheDocument();
+    expect(document.querySelector('.tool_summary')).toBeNull();
+    expect(screen.getByText('You can also attach papers.')).toBeInTheDocument();
+    expect(screen.getByText('What is your research direction?')).toBeInTheDocument();
+  });
+
+  it('does not restore the welcome when only internal work is visible', () => {
+    render(<MessageList compactProcess emptySlot={<div>Welcome</div>} endSlot={<div>Working</div>} />, {
+      wrapper: ({ children }) => (
+        <Wrapper messages={[createAcpToolCall({ status: 'in_progress' })]}>{children}</Wrapper>
+      ),
+    });
+    expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
+    expect(screen.getByText('Working')).toBeInTheDocument();
+    expect(document.querySelector('.tool_summary')).toBeNull();
+  });
+
+  it('keeps a tool confirmation visible in compact conversations', () => {
+    const approval = createToolGroup([
+      {
+        call_id: 'approval-tool',
+        name: 'WriteFile',
+        description: 'Allow file update',
+        render_output_as_markdown: false,
+        status: 'Confirming',
+      },
+    ]);
+    render(<MessageList compactProcess />, {
+      wrapper: ({ children }) => <Wrapper messages={[approval]}>{children}</Wrapper>,
+    });
+    expect(document.querySelector('.tool_summary')).not.toBeNull();
+  });
+
+  it('preserves earlier replies and actionable errors when later paper talk work starts', () => {
+    const messages: TMessage[] = [
+      { ...createTextMessage(), id: 'first-answer', content: { content: 'Earlier answer' }, created_at: 1 },
+      {
+        ...createTextMessage(),
+        id: 'next-user',
+        position: 'right',
+        content: { content: 'Read SKILL.md means what?' },
+        created_at: 2,
+      },
+      { ...createAcpToolCall({ status: 'failed' }), created_at: 3 },
+      { id: 'approval', conversation_id: 'conversation-1', type: 'acp_permission', content: {} } as TMessage,
+      {
+        id: 'error',
+        conversation_id: 'conversation-1',
+        type: 'tips',
+        content: { type: 'error', content: 'Please retry' },
+      } as TMessage,
+    ];
+    render(<MessageList compactProcess />, {
+      wrapper: ({ children }) => <Wrapper messages={messages}>{children}</Wrapper>,
+    });
+    expect(screen.getByText('Earlier answer')).toBeInTheDocument();
+    expect(screen.getByText('Read SKILL.md means what?')).toBeInTheDocument();
+    expect(screen.getByText('acp_permission')).toBeInTheDocument();
+    expect(screen.getByText('tips')).toBeInTheDocument();
+    expect(document.querySelector('.tool_summary')).not.toBeNull();
+  });
+
   it('never renders a plan as a stream row (it belongs to ConversationPlanBar)', () => {
     // A plan is a replaceable snapshot pinned above the send box, not a message.
     // Filtered rather than rendered as null: a null row still occupies a slot.
@@ -656,5 +751,39 @@ describe('MessageList', () => {
     expect(screen.getByTestId('tool-summary')).toHaveTextContent(message.id);
     expect(screen.queryByTestId('file-changes')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tool-group')).not.toBeInTheDocument();
+  });
+  it('keeps only final prose and inserts choice cards before later user messages', () => {
+    const messages = [
+      { id: 'u', type: 'text', position: 'right', content: { content: '方向' }, created_at: 1 },
+      { id: 'internal', type: 'text', position: 'left', content: { content: 'Read SKILL.md' }, created_at: 2 },
+      {
+        id: 'tool',
+        type: 'tool_call',
+        position: 'left',
+        content: { content: 'secret/path', status: 'error' },
+        created_at: 3,
+      },
+      { id: 'final', type: 'text', position: 'left', content: { content: '推荐这篇论文' }, created_at: 4 },
+      { id: 'later', type: 'text', position: 'right', content: { content: '选第一篇' }, created_at: 6 },
+    ] as unknown as IMessageText[];
+    render(
+      <MessageList
+        finalOnly
+        timelineSlots={[{ id: 'card', createdAt: 3.5, content: <div data-testid='paper-choice'>papers</div> }]}
+      />,
+      {
+        wrapper: ({ children }) => <Wrapper messages={messages}>{children}</Wrapper>,
+      }
+    );
+    expect(screen.queryByText('Read SKILL.md')).toBeNull();
+    expect(screen.queryByText('tool_call')).toBeNull();
+    expect(
+      screen.getByText('推荐这篇论文').compareDocumentPosition(screen.getByTestId('paper-choice')) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId('paper-choice').compareDocumentPosition(screen.getByText('选第一篇')) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
   });
 });

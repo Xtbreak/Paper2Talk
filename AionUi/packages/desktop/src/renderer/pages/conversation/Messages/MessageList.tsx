@@ -12,7 +12,7 @@ import { getChatSurfaceWidthClass } from '@/renderer/pages/conversation/utils/ch
 import { iconColors } from '@/renderer/styles/colors';
 import { CHAT_MESSAGE_JUMP_EVENT, type ChatMessageJumpDetail } from '@/renderer/utils/chat/chatMinimapEvents';
 import { collectAiCopyRows, type TurnCopyItem } from '@/renderer/utils/chat/turnCopy';
-import { Image } from '@arco-design/web-react';
+import { Collapse, Image } from '@arco-design/web-react';
 import { Down } from '@icon-park/react';
 import MessageAcpPermission from '@renderer/pages/conversation/Messages/acp/MessageAcpPermission';
 import MessageQuestion from './MessageQuestion';
@@ -331,7 +331,14 @@ const MessageItem: React.FC<{
         (prev.turnTexts ?? []).every((segment, i) => segment === next.turnTexts?.[i])))
 );
 
-const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }> = ({ emptySlot }) => {
+const MessageList: React.FC<{
+  className?: string;
+  emptySlot?: React.ReactNode;
+  endSlot?: React.ReactNode;
+  timelineSlots?: { id: string; createdAt: number; content: React.ReactNode }[];
+  finalOnly?: boolean;
+  compactProcess?: boolean;
+}> = ({ emptySlot, endSlot, timelineSlots = [], finalOnly = false, compactProcess = false }) => {
   const list = useMessageList();
   const isMessageListLoading = useMessageListLoading();
   const pagination = useMessagePaginationState();
@@ -353,14 +360,38 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
   const loadingTargetKeyRef = useRef<string>('');
   const scrollerElementRef = useRef<HTMLDivElement | null>(null);
   const contentElementRef = useRef<HTMLDivElement | null>(null);
+  const hasMessages = list.some((message) => !message.hidden);
 
   // Pre-process message list to group tool outputs into summary cards
   const processedList = useMemo(() => {
     const result: Array<IMessageVO> = [];
+    const finalTextIds = new Set<string>();
+    let finalText: string | undefined;
+    for (const message of list) {
+      if (message.hidden) continue;
+      if (message.position === 'right') {
+        if (finalText) finalTextIds.add(finalText);
+        finalText = undefined;
+      } else if (message.type === 'text' && message.status !== 'error') finalText = message.id;
+    }
+    if (finalText && !isProcessing) finalTextIds.add(finalText);
     let diffsChanges: FileChangeInfo[] = [];
     let diffsSourceMessageIds: string[] = [];
     let toolList: Array<IMessageToolGroup | IMessageAcpToolCall | IMessageToolCall> = [];
     let toolSourceMessageIds: string[] = [];
+    const processTextIds = new Set<string>();
+    if (compactProcess) {
+      let followedByTool = false;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const message = list[i];
+        if (message.hidden) continue;
+        if (message.position === 'right') followedByTool = false;
+        else if (['tool_group', 'tool_call', 'acp_tool_call', 'acp_terminal_output'].includes(message.type))
+          followedByTool = true;
+        else if (message.type === 'text' && message.position === 'left' && message.status !== 'error' && followedByTool)
+          processTextIds.add(message.id);
+      }
+    }
 
     const pushFileDiffChanges = (changes: FileChangeInfo, sourceMessageId: string, created_at: number) => {
       if (!diffsChanges.length) {
@@ -406,6 +437,27 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
       const message = list[i];
       // Skip hidden and available_commands messages
       if (message.hidden) continue;
+      if (
+        finalOnly &&
+        message.position !== 'right' &&
+        !['permission', 'ask'].includes(message.type) &&
+        !finalTextIds.has(message.id)
+      )
+        continue;
+      if (compactProcess) {
+        if (processTextIds.has(message.id) || message.type === 'thinking') continue;
+        if (message.type === 'acp_terminal_output' && !message.content.exit_status?.exit_code) continue;
+        if (message.type === 'agent_status' && message.content.status !== 'error') continue;
+        if (message.type === 'tool_call' && message.content.status !== 'error' && !message.content.error) continue;
+        if (message.type === 'acp_tool_call' && message.content.update?.status !== 'failed') continue;
+        if (
+          message.type === 'tool_group' &&
+          !message.content.some(
+            (tool) => tool.status === 'Error' || tool.status === 'Confirming' || tool.confirmationDetails
+          )
+        )
+          continue;
+      }
       if (message.type === 'available_commands') continue;
       // A plan renders in ConversationPlanBar, never in the stream. Filtered
       // here rather than rendered as null: a null row still occupies a slot.
@@ -443,6 +495,7 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
     }
     const visibleArtifacts = artifacts
       .filter((artifact) => {
+        if (finalOnly) return false;
         if (artifact.kind === 'cron_trigger') return artifact.status === 'active';
         if (artifact.kind === 'skill_suggest') return artifact.status === 'pending';
         return false;
@@ -457,7 +510,7 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
     return [...result, ...visibleArtifacts].toSorted(
       (a, b) => getProcessedItemCreatedAt(a) - getProcessedItemCreatedAt(b)
     );
-  }, [artifacts, list]);
+  }, [artifacts, list, compactProcess, finalOnly, isProcessing]);
 
   // An AI reply can be split into several messages (thinking / multiple text /
   // tool blocks). The hover copy + timestamp row should appear once per turn,
@@ -709,6 +762,15 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
       );
     }
     const message = item as TMessage;
+    if (finalOnly && message.type === 'permission') {
+      return (
+        <Collapse className={rowWidthClass} bordered={false}>
+          <Collapse.Item name={message.id} header={t('common.paperTalk.permissionDetails')}>
+            <MessageItem message={message} rowWidthClass={rowWidthClass} />
+          </Collapse.Item>
+        </Collapse>
+      );
+    }
     // User messages keep their own copy row; AI text only shows it at the turn end.
     const showCopyRow = message.position !== 'left' || message.type !== 'text' || aiCopyRowTextIds.has(message.id);
     return (
@@ -725,11 +787,22 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
     );
   };
 
+  const positionedSlots = timelineSlots.flatMap((slot) => {
+    const firstTime = processedList.length ? getProcessedItemCreatedAt(processedList[0]) : 0;
+    if (pagination.hasMoreBefore && slot.createdAt < firstTime) return [];
+    const lastTime = processedList.length ? getProcessedItemCreatedAt(processedList[processedList.length - 1]) : 0;
+    if (pagination.hasMoreAfter && slot.createdAt > lastTime) return [];
+    let index = processedList.findIndex((item) => getProcessedItemCreatedAt(item) > slot.createdAt);
+    index = index < 0 ? processedList.length - 1 : index - 1;
+    while (index + 1 < processedList.length && (processedList[index + 1] as TMessage).position !== 'right') index++;
+    return [{ ...slot, after: index }];
+  });
+
   if (processedList.length === 0 && isMessageListLoading) {
     return <MessageListSkeleton rowWidthClass={rowWidthClass} />;
   }
 
-  if (processedList.length === 0 && emptySlot) {
+  if (!hasMessages && !isProcessing && emptySlot && !endSlot && !timelineSlots.length) {
     return <div className='relative flex-1 h-full flex items-center justify-center'>{emptySlot}</div>;
   }
 
@@ -759,9 +832,27 @@ const MessageList: React.FC<{ className?: string; emptySlot?: React.ReactNode }>
               }}
             >
               <div className='h-10px' />
+              {!hasMessages && !isProcessing && emptySlot && <div className={rowWidthClass}>{emptySlot}</div>}
+              {positionedSlots
+                .filter((slot) => slot.after === -1)
+                .map((slot) => (
+                  <div className={rowWidthClass} key={slot.id}>
+                    {slot.content}
+                  </div>
+                ))}
               {processedList.map((item, index) => (
-                <React.Fragment key={getProcessedItemAnchorId(item) || index}>{renderItem(index, item)}</React.Fragment>
+                <React.Fragment key={getProcessedItemAnchorId(item) || index}>
+                  {renderItem(index, item)}
+                  {positionedSlots
+                    .filter((slot) => slot.after === index)
+                    .map((slot) => (
+                      <div className={rowWidthClass} key={slot.id}>
+                        {slot.content}
+                      </div>
+                    ))}
+                </React.Fragment>
               ))}
+              {endSlot && <div className={rowWidthClass}>{endSlot}</div>}
               <div className='h-20px' />
             </div>
           </div>

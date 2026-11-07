@@ -4,9 +4,12 @@ import AppLoader from '@renderer/components/layout/AppLoader';
 import DocumentTitle from '@renderer/components/layout/DocumentTitle';
 import { useCrossSessionRateLimitNotice } from '@/renderer/hooks/system/useCrossSessionRateLimitNotice';
 import { useAuth } from '@renderer/hooks/context/AuthContext';
+import { isElectronDesktop } from '@/renderer/utils/platform';
 import { TEAM_MODE_ENABLED } from '@/common/config/constants';
+const homePath = isElectronDesktop() ? '/paper-talk' : '/guid';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
+const PaperTalk = React.lazy(() => import('@renderer/pages/conversation/PaperTalk/Entry'));
 const ModelBench = React.lazy(() => import('@renderer/pages/ModelBench'));
 const AgentSettings = React.lazy(() => import('@renderer/pages/settings/AgentSettings'));
 const AgentRepairPage = React.lazy(() => import('@renderer/pages/settings/AgentSettings/AgentRepairPage'));
@@ -70,16 +73,17 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
       <Routes>
         <Route
           path='/login'
-          element={status === 'authenticated' ? <Navigate to='/guid' replace /> : withRouteFallback(LoginPage)}
+          element={status === 'authenticated' ? <Navigate to={homePath} replace /> : withRouteFallback(LoginPage)}
         />
         <Route element={<ProtectedLayout layout={layout} />}>
-          <Route index element={<Navigate to='/guid' replace />} />
+          <Route index element={<Navigate to={homePath} replace />} />
           <Route path='/guid' element={withRouteFallback(Guid)} />
+          <Route path='/paper-talk' element={withRouteFallback(PaperTalk)} />
           <Route path='/model-bench' element={withRouteFallback(ModelBench)} />
           <Route path='/conversation/:id' element={withRouteFallback(Conversation)} />
           <Route
             path='/team/:id'
-            element={TEAM_MODE_ENABLED ? withRouteFallback(TeamIndex) : <Navigate to='/guid' replace />}
+            element={TEAM_MODE_ENABLED ? withRouteFallback(TeamIndex) : <Navigate to={homePath} replace />}
           />
           <Route path='/settings/model' element={withRouteFallback(ModeSettings)} />
           <Route path='/assistants' element={withRouteFallback(AssistantSettings)} />
@@ -113,7 +117,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/scheduled' element={withRouteFallback(ScheduledTasksPage)} />
           <Route path='/scheduled/:job_id' element={withRouteFallback(TaskDetailPage)} />
         </Route>
-        <Route path='*' element={<Navigate to={status === 'authenticated' ? '/guid' : '/login'} replace />} />
+        <Route path='*' element={<Navigate to={status === 'authenticated' ? homePath : '/login'} replace />} />
       </Routes>
     </HashRouter>
   );

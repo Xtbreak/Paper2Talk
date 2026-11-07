@@ -38,6 +38,7 @@ import { resolveConversationBackend } from '../utils/conversationAssistantIdenti
 import LegacyReadOnlyConversation from '../platforms/legacy/LegacyReadOnlyConversation';
 import SingleChatEmptyState from './SingleChatEmptyState';
 import { useActiveLease } from '../hooks/useActiveLease';
+import { PaperTalkHeader, PaperTalkPreview, usePaperTalk } from '../PaperTalk';
 // import SkillRuleGenerator from './components/SkillRuleGenerator'; // Temporarily hidden
 
 const configErrorMessageKey = (error: unknown) => {
@@ -269,6 +270,7 @@ const ChatConversation: React.FC<{
   conversation?: TChatConversation;
   hideSendBox?: boolean;
 }> = ({ conversation, hideSendBox }) => {
+  const paperTalk = usePaperTalk();
   const [runtimeReadyConversationId, setRuntimeReadyConversationId] = useState<string | null>(null);
   const { t } = useTranslation();
   // Stable identity: the selector reports readiness from an effect keyed on this
@@ -278,7 +280,7 @@ const ChatConversation: React.FC<{
     [conversation?.id]
   );
   useActiveLease({ type: 'conversation', id: conversation?.id });
-  const workspaceEnabled = Boolean(conversation?.extra?.workspace) && !conversation?.project_id;
+  const workspaceEnabled = !paperTalk && Boolean(conversation?.extra?.workspace) && !conversation?.project_id;
   const cronJobId = resolveCronJobId(conversation?.extra);
   const layout = useLayoutContext();
   const isMobile = Boolean(layout?.isMobile);
@@ -407,7 +409,8 @@ const ChatConversation: React.FC<{
 
   const headerExtraNode = (
     <div className='flex items-center gap-8px'>
-      {conversation && (
+      {paperTalk && <PaperTalkHeader />}
+      {conversation && !paperTalk && (
         <div className='shrink-0'>
           <CronJobManager conversation_id={conversation.id} cron_job_id={cronJobId} />
         </div>
@@ -426,13 +429,15 @@ const ChatConversation: React.FC<{
 
   return (
     <ChatLayout
-      title={conversation?.name}
+      title={paperTalk ? paperTalk.draft.brief.direction || t('common.paperTalk.newConversation') : conversation?.name}
       {...chatLayoutProps}
       headerExtra={headerExtraNode}
       siderTitle={sliderTitle}
       sider={<ChatSlider conversation={conversation} />}
       workspaceEnabled={workspaceEnabled}
-      previewHosted={Boolean(conversation?.project_id)}
+      previewHosted={!paperTalk && Boolean(conversation?.project_id)}
+      previewPanel={paperTalk ? <PaperTalkPreview /> : undefined}
+      previewOpen={paperTalk?.previewOpen}
       workspacePath={conversation?.extra?.workspace}
       workspacePreferenceKey={conversation?.project_id}
       isTemporaryWorkspace={

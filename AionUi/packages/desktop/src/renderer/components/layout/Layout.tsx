@@ -163,7 +163,7 @@ const Layout: React.FC<{
       void navigate(target);
       return;
     }
-    void navigate('/guid');
+    void navigate(isElectronDesktop() ? '/paper-talk' : '/guid');
   }, [navigate]);
   // Close preview whenever the user leaves the conversation route entirely
   // (e.g. switches to a team, /guid, or settings). Within /conversation/:id
@@ -302,7 +302,7 @@ const Layout: React.FC<{
 
     // Navigate to guid page when requested from tray / 托盘请求导航到 guid 页面
     const handleNavigateToGuid = () => {
-      void navigate('/guid');
+      void navigate(isElectronDesktop() ? '/paper-talk' : '/guid');
     };
 
     // Navigate to conversation when requested from tray / 托盘请求导航到对话页面
@@ -434,7 +434,10 @@ const Layout: React.FC<{
                     </div>
                   </Tooltip>
                 ) : (
-                  <div className='text-16px text-t-primary collapsed-hidden font-semibold'>{APP_DISPLAY_NAME}</div>
+                  <div className='collapsed-hidden min-w-0'>
+                    <div className='text-18px text-t-primary font-semibold tracking-1px'>{APP_DISPLAY_NAME}</div>
+                    <div className='text-11px text-t-secondary mt-2px'>{t('common.paperTalk.tagline')}</div>
+                  </div>
                 )}
                 {isMobile && !collapsed && (
                   <button

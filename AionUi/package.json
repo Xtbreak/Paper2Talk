@@ -1,7 +1,7 @@
 {
   "name": "AionUi",
   "version": "2.2.2",
-  "description": "面向产品经理的 AI 专属工作台。",
+  "description": "研报：通过对话，将研究文献整理成组会汇报 PPT。",
   "keywords": [],
   "license": "Apache-2.0",
   "author": {
@@ -13,6 +13,7 @@
   ],
   "main": "./out/main/index.js",
   "scripts": {
+    "paper-talk": "node scripts/start-paper-talk.cjs",
     "dev": "electron-vite dev --config packages/desktop/electron.vite.config.ts",
     "start": "electron-vite dev --config packages/desktop/electron.vite.config.ts",
     "start:multi": "cross-env AIONUI_MULTI_INSTANCE=1 electron-vite dev --config packages/desktop/electron.vite.config.ts",
@@ -268,5 +269,5 @@
   "patchedDependencies": {
     "7zip-bin@5.2.0": "patches/7zip-bin@5.2.0.patch"
   },
-  "productName": "产品经理工作台"
+  "productName": "研报"
 }

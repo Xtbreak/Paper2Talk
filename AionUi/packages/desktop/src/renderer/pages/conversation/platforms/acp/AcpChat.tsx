@@ -27,6 +27,8 @@ import React from 'react';
 import AcpE2EStreamInjector from './AcpE2EStreamInjector';
 import AcpSendBox from './AcpSendBox';
 import { useAcpMessage } from './useAcpMessage';
+import { PaperTalkMessages, usePaperTalk } from '../../PaperTalk';
+import { conversationCards } from '../../PaperTalk/client';
 
 const AcpChat: React.FC<{
   conversation_id: string;
@@ -63,6 +65,7 @@ const AcpChat: React.FC<{
   forkCapability,
   promptCapability,
 }) => {
+  const paperTalk = usePaperTalk();
   useMessageLstCache(conversation_id);
   usePendingConfirmationsRecovery(conversation_id);
   usePlanRecovery(conversation_id);
@@ -91,10 +94,21 @@ const AcpChat: React.FC<{
       <ConversationArtifactProvider conversation_id={conversation_id}>
         <div className={`${CHAT_SURFACE_CONTAINER_CLASS} flex-1 flex flex-col px-20px min-h-0`}>
           <FlexFullContainer>
-            <MessageList className='flex-1' emptySlot={emptySlot} />
+            <MessageList
+              className='flex-1'
+              emptySlot={paperTalk ? <PaperTalkMessages welcomeOnly /> : emptySlot}
+              endSlot={paperTalk ? <PaperTalkMessages /> : undefined}
+              timelineSlots={(paperTalk?.report ? conversationCards(paperTalk.report) : []).map((card) => ({
+                id: card.id,
+                createdAt: card.created_at,
+                content: <PaperTalkMessages card={card} />,
+              }))}
+              finalOnly={Boolean(paperTalk)}
+              compactProcess={false}
+            />
           </FlexFullContainer>
           <AcpE2EStreamInjector conversationId={conversation_id} />
-          <ConversationPlanBar conversation_id={conversation_id} />
+          {!paperTalk && <ConversationPlanBar conversation_id={conversation_id} />}
           {!hideSendBox && (
             <AcpSendBox
               conversation_id={conversation_id}

@@ -23,6 +23,7 @@ mod file;
 mod lifecycle;
 mod mcp;
 mod office;
+pub mod paper_talk;
 mod project;
 mod provider;
 mod remote_agent;

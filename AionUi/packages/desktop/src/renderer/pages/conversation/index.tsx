@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import useSWR from 'swr';
 import ChatConversation from './components/ChatConversation';
+import { PaperTalkProvider } from './PaperTalk';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { previewScopeKey } from '@/renderer/pages/conversation/Preview/context/previewScope';
 import { setCurrentProject } from '@/renderer/pages/conversation/explorer/currentProjectStore';
@@ -25,6 +26,7 @@ const ChatConversationIndex: React.FC = () => {
   const { data, isLoading, mutate } = useSWR(id ? `conversation/${id}` : null, () => {
     return getConversationOrNull(id!);
   });
+  const reportId = (data?.extra as { paper_talk_report_id?: string } | undefined)?.paper_talk_report_id;
 
   // Close preview only when the isolation scope changes, not on every
   // conversation switch. Same-scope conversations keep the preview open. The
@@ -48,8 +50,8 @@ const ChatConversationIndex: React.FC = () => {
   // never a stale project. Runs before paint (layout effect) so no stale frame.
   useLayoutEffect(() => {
     if (!id) return;
-    setCurrentProject(getSnapshotConversationProjectId(id) ?? null);
-  }, [id]);
+    setCurrentProject(reportId ? null : (getSnapshotConversationProjectId(id) ?? null));
+  }, [id, reportId]);
 
   // Post-resolve authoritative correction: once `conversation.get` lands, publish
   // its project_id (also the backfill path — a workspace conversation's
@@ -57,8 +59,8 @@ const ChatConversationIndex: React.FC = () => {
   // below). `setCurrentProject` dedups, so when the sync effect already set the
   // right value this is a no-op.
   useEffect(() => {
-    if (data) setCurrentProject(data.project_id ?? null);
-  }, [data]);
+    if (data) setCurrentProject(reportId ? null : (data.project_id ?? null));
+  }, [data, reportId]);
 
   // Publish the active conversation id so the Layout-level Explorer's "add to
   // chat" can target this conversation's send box. Cleared when leaving the
@@ -107,6 +109,12 @@ const ChatConversationIndex: React.FC = () => {
   }, [id, isLoading, data, navigate, t]);
 
   if (isLoading) return <Spin loading></Spin>;
+  if (reportId)
+    return (
+      <PaperTalkProvider key={id} reportId={reportId}>
+        <ChatConversation conversation={data ?? undefined} />
+      </PaperTalkProvider>
+    );
   return <ChatConversation conversation={data ?? undefined}></ChatConversation>;
 };
 

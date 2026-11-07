@@ -3,6 +3,15 @@
 :root {
   --app-min-width: 360px;
   --titlebar-height: 36px;
+  --paper-slide-background: #f6f5f1;
+  --paper-slide-ink: #182e33;
+  --paper-slide-muted: #637575;
+  --paper-slide-accent: #0a7472;
+  --paper-slide-classic-accent: #803c35;
+  --paper-slide-soft: #e4eeea;
+  --paper-slide-line: #cad5d1;
+  --paper-slide-emphasis: #d66b3d;
+  --paper-slide-baseline: #a7b9b2;
 }
 
 .app-shell {

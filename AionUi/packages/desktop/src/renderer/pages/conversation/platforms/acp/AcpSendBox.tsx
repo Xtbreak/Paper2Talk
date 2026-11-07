@@ -55,6 +55,7 @@ import { classifyConversationBusyError } from '../conversationBusyError';
 import { buildSendFailureError } from './buildSendFailureError';
 import { useAcpInitialMessage } from './useAcpInitialMessage';
 import type { UseAcpMessageReturn } from './useAcpMessage';
+import { usePaperTalk } from '../../PaperTalk';
 
 const configErrorMessageKey = (error: unknown) => {
   const errorKind = classifyConfigSetError(error);
@@ -115,6 +116,7 @@ const AcpSendBox: React.FC<{
   teamSendMessage?: (payload: { input: string; files: ChatFileRef[] }) => Promise<void>;
   teamRuntime?: TeamSendBoxRuntime;
 }> = ({ conversation_id, backend, session_mode, agent_name, messageState, teamSendMessage, teamRuntime }) => {
+  const paperTalk = usePaperTalk();
   const {
     aiProcessing,
     setAiProcessing,
@@ -298,6 +300,7 @@ const AcpSendBox: React.FC<{
           return;
         }
 
+        await paperTalk?.prepare(input, files);
         markSendStarted();
         setAiProcessing(true);
         const result = await ipcBridge.acpConversation.sendMessage.invoke({
@@ -402,6 +405,7 @@ Please check your local CLI tool authentication status`,
       t,
       teamPermission,
       teamSendMessage,
+      paperTalk,
     ]
   );
 
@@ -443,7 +447,7 @@ Please check your local CLI tool authentication status`,
   // that path is hard-blocked with a toast; the only way to queue a message
   // while busy is the explicit "add to queue" entry (handleAddToQueue below).
   const onSendHandler = async (message: string): Promise<void | false> => {
-    if (!supportsMidturnDelivery && isBusy) {
+    if (!paperTalk && !supportsMidturnDelivery && isBusy) {
       Message.warning(
         t('conversation.commandQueue.midturnBlocked', {
           defaultValue:
@@ -455,10 +459,10 @@ Please check your local CLI tool authentication status`,
 
     const allFiles = collectChatFileRefs(uploadFile, atPath);
     const sessions = selectedSessions.length > 0 ? selectedSessions : undefined;
+    await executeCommand({ input: message, files: allFiles, sessions });
     clearFiles();
     setSelectedSessions([]);
     emitter.emit('acp.selected.file.clear');
-    await executeCommand({ input: message, files: allFiles, sessions });
   };
 
   const [interrupting, setInterrupting] = useState(false);
@@ -810,6 +814,7 @@ Please check your local CLI tool authentication status`,
         statusText={teamRuntime?.statusText}
         externalElapsedSource={Boolean(teamRuntime) || turnStartedAtMs != null}
         startedAtMs={teamRuntime ? (teamRuntime.startedAtMs ?? null) : turnStartedAtMs}
+        inputHint={paperTalk ? '' : undefined}
         onStop={effectiveHandleStop}
         onRetryStart={teamRuntime?.onRetryStart ? () => void teamRuntime.onRetryStart?.() : undefined}
       />
@@ -840,10 +845,15 @@ Please check your local CLI tool authentication status`,
               })
             : undefined
         }
-        placeholder={t('acp.sendbox.placeholder', {
-          backend: agent_name || backend,
-          defaultValue: `Send message to {{backend}}...`,
-        })}
+        placeholder={
+          paperTalk
+            ? t('common.paperTalk.composerPlaceholder')
+            : t('acp.sendbox.placeholder', {
+                backend: agent_name || backend,
+                defaultValue: `Send message to {{backend}}...`,
+              })
+        }
+        inputHint={paperTalk ? '' : undefined}
         onStop={effectiveHandleStop}
         className='z-10'
         onFilesAdded={handleFilesAdded}

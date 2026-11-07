@@ -38,6 +38,8 @@ const ChatLayout: React.FC<{
   agent_name?: string;
   headerExtra?: React.ReactNode;
   workspaceEnabled?: boolean;
+  previewPanel?: React.ReactNode;
+  previewOpen?: boolean;
   /**
    * When true (project conversations), the preview panel is hoisted to the
    * Layout-level project host and this ChatLayout renders chat only — the preview
@@ -82,7 +84,9 @@ const ChatLayout: React.FC<{
   // For project conversations the preview lives at the Layout host, so this
   // ChatLayout must behave as if there is no preview: chat fills, no split, no
   // preview panel. Everywhere below uses `isPreviewOpen` for that local decision.
-  const isPreviewOpen = isPreviewOpenRaw && !previewHosted;
+  const isPreviewOpen = props.previewPanel
+    ? Boolean(props.previewOpen || isPreviewOpenRaw)
+    : isPreviewOpenRaw && !previewHosted;
   // 最大化（仅桌面）：隐藏聊天区、让内联预览铺满；工作区右栏保持不变。
   // 项目会话的预览被提升到 Layout host（previewHosted），其最大化在 Layout 处理，
   // 这里的 isPreviewOpen 已排除该情况。
@@ -90,7 +94,7 @@ const ChatLayout: React.FC<{
   // the right workspace sider stays unchanged. Project conversations hoist the
   // preview to the Layout host (previewHosted) and handle maximizing there —
   // isPreviewOpen already excludes that case here.
-  const previewMaximized = isDesktop && isPreviewOpen && isMaximized;
+  const previewMaximized = isDesktop && isPreviewOpen && isPreviewOpenRaw && isMaximized;
 
   // --- Hook A: workspace collapse ---
   const { rightSiderCollapsed, setRightSiderCollapsed } = useWorkspaceCollapse({
@@ -319,7 +323,7 @@ const ChatLayout: React.FC<{
                     lineStyle: { width: '2px' },
                   })}
                 <div className={classNames('h-full w-full overflow-hidden', isDesktop ? '' : 'rounded-[15px]')}>
-                  <PreviewPanel />
+                  {props.previewPanel && !isPreviewOpenRaw ? props.previewPanel : <PreviewPanel />}
                 </div>
               </div>
             )}

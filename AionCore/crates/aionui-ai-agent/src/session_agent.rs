@@ -726,13 +726,21 @@ impl SessionAgentTask {
                 } else {
                     options
                 };
+                let input = self.backend.pending_permission_input(&p.request_id);
+                let detail = input.as_ref().map(|value| {
+                    value
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                });
                 aionui_common::Confirmation {
                     id: p.request_id.clone(),
                     call_id: p.request_id,
                     title: (!p.tool_name.is_empty()).then(|| p.tool_name.clone()),
                     action: None,
                     description: String::new(),
-                    command_type: None,
+                    command_type: detail,
                     // The full question payload rides along so the frontend
                     // recovery rebuilds the REAL question card; the flattened
                     // options above stay as the fallback for older frontends.
@@ -9256,6 +9264,10 @@ mod pump_tests {
         fn pending_permission_requests(&self) -> Vec<aionui_session::PendingPermissionView> {
             vec![self.0.clone()]
         }
+        fn pending_permission_input(&self, request_id: &str) -> Option<serde_json::Value> {
+            (self.0.request_id == request_id && self.0.tool_name == "Bash")
+                .then(|| serde_json::json!({"command":"curl https://example.org/paper.pdf -o paper.pdf"}))
+        }
     }
 
     // get_confirmations must recover a pending AskUserQuestion as a question card
@@ -9324,6 +9336,10 @@ mod pump_tests {
             .filter_map(|o| o.value.as_str().map(str::to_owned))
             .collect();
         assert_eq!(vals, vec!["allow", "allow_always", "reject"]);
+        assert_eq!(
+            confs[0].command_type.as_deref(),
+            Some("curl https://example.org/paper.pdf -o paper.pdf")
+        );
     }
 
     /// Backend whose capabilities advertise modes+models but whose current_* never

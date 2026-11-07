@@ -786,6 +786,12 @@ fn builtin_slash_commands() -> Vec<crate::capability::SlashCommandInfo> {
 /// from blocking the send path indefinitely.
 const STEER_ACK_TIMEOUT_MS: u64 = 5_000;
 
+struct PendingToolApproval {
+    title: String,
+    input: Option<Value>,
+}
+type PendingToolApprovals = Arc<std::sync::Mutex<HashMap<String, PendingToolApproval>>>;
+
 /// Per-session codex handle. `&self`-concurrent (stdin write behind a Mutex).
 pub struct CodexSessionBackend {
     session_id: String,
@@ -861,15 +867,14 @@ pub struct CodexSessionBackend {
     /// REST-recovery (`GET /confirmations`) source: the currently-open (unanswered)
     /// tool/file/elicitation approval requests, keyed by the SAME request_id the
     /// backend surfaced on `SessionEvent::Permission` (so the recovered card's
-    /// id==call_id matches the live frame and de-dups). The value is a safe title
-    /// label derived from the reverse-RPC method (NOT the command body — TIO-13).
+    /// id==call_id matches the live frame and de-dups).
     /// Lifecycle: the reader inserts on each `*/requestApproval` (+ elicitation)
     /// reverse-RPC, removes on `serverRequest/resolved` (codex retracted/answered it)
     /// and `dispatch(AnswerPermission)` (we answered it). `std::sync::Mutex` because
     /// the sync `pending_permission_requests()` trait method reads it without await —
     /// mirrors claude's `pending_perms`. Behind an Arc so the reader (cloned into
     /// every post-wake reader via `reader_state`) shares the one registry.
-    pending_tool_approvals: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pending_tool_approvals: PendingToolApprovals,
     /// GAP-A: rpc-id → [`PendingSend`] correlation for in-flight `turn/start`
     /// (and review/compact/logout) requests. codex IS a bidirectional JSON-RPC
     /// client: `turn/start` gets a synchronous response
@@ -1000,7 +1005,7 @@ struct CodexReaderState {
     thread_binding: Arc<Mutex<Option<String>>>,
     active_turn_id: Arc<Mutex<Option<String>>>,
     pending_auth_id: Arc<Mutex<Option<Value>>>,
-    pending_tool_approvals: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pending_tool_approvals: PendingToolApprovals,
     pending_sends: Arc<Mutex<HashMap<u64, PendingSend>>>,
     pending_discovery: Arc<Mutex<HashMap<u64, DiscoveryKind>>>,
     pending_set: Arc<Mutex<HashMap<u64, String>>>,
@@ -1588,7 +1593,7 @@ async fn reader_task(
     thread_binding: Arc<Mutex<Option<String>>>,
     active_turn_id: Arc<Mutex<Option<String>>>,
     pending_auth_id: Arc<Mutex<Option<Value>>>,
-    pending_tool_approvals: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pending_tool_approvals: PendingToolApprovals,
     pending_sends: Arc<Mutex<HashMap<u64, PendingSend>>>,
     pending_discovery: Arc<Mutex<HashMap<u64, DiscoveryKind>>>,
     pending_set: Arc<Mutex<HashMap<u64, String>>>,
@@ -2562,7 +2567,7 @@ fn rollback_to_turn(result: &Value) -> u64 {
 /// `ELICIT_PREFIX`-tagged key — so try the raw id first, then the prefixed form, so
 /// a resolved notification clears either entry shape. `dispatch(AnswerPermission)`
 /// passes the exact stored key (raw or prefixed), which the first lookup catches.
-fn remove_pending_tool_approval(pending: &Arc<std::sync::Mutex<HashMap<String, String>>>, request_id: &str) {
+fn remove_pending_tool_approval(pending: &PendingToolApprovals, request_id: &str) {
     let mut map = pending.lock().unwrap_or_else(|e| e.into_inner());
     if map.remove(request_id).is_none() {
         map.remove(&format!("{ELICIT_PREFIX}{request_id}"));
@@ -2588,7 +2593,7 @@ async fn handle_reverse_rpc(
     turn_gen: &Arc<AtomicU64>,
     event_tx: &broadcast::Sender<SessionEnvelope>,
     pending_auth_id: &Arc<Mutex<Option<Value>>>,
-    pending_tool_approvals: &Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pending_tool_approvals: &PendingToolApprovals,
     stdin: &Arc<Mutex<Option<aionui_process::BoxedStdin>>>,
 ) {
     let cur = turn_gen.load(Ordering::SeqCst);
@@ -2651,18 +2656,20 @@ async fn handle_reverse_rpc(
             // raised before the client subscribed (or after a page reload) must be
             // rebuildable, else the turn hangs waiting for an answer that can never be
             // given. Keyed by the SAME request_id we surface, so a duplicate live+
-            // recovered pair de-dups; the value is a safe title (the approval class,
-            // NOT the command body — TIO-13). Cleared on serverRequest/resolved or
+            // recovered pair de-dups. Cleared on serverRequest/resolved or
             // dispatch(AnswerPermission).
             let title = if method == "item/fileChange/requestApproval" {
                 "FileChange"
             } else {
                 "CommandExecution"
             };
-            pending_tool_approvals
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(request_id.clone(), title.to_string());
+            pending_tool_approvals.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                request_id.clone(),
+                PendingToolApproval {
+                    title: title.to_string(),
+                    input: frame.get("params").cloned(),
+                },
+            );
             emit(
                 event_tx,
                 session_id,
@@ -2708,10 +2715,13 @@ async fn handle_reverse_rpc(
             // Register for REST recovery, keyed by the ELICIT_PREFIX-tagged request_id
             // (the same id we surface + dispatch(AnswerPermission) answers). Title is
             // the safe approval class, not the elicitation message body (TIO-13).
-            pending_tool_approvals
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(request_id.clone(), "Elicitation".to_string());
+            pending_tool_approvals.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                request_id.clone(),
+                PendingToolApproval {
+                    title: "Elicitation".to_string(),
+                    input: Some(input.clone()),
+                },
+            );
             emit(
                 event_tx,
                 session_id,
@@ -4598,12 +4608,20 @@ impl SessionBackend for CodexSessionBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(request_id, title)| PendingPermissionView {
+            .map(|(request_id, approval)| PendingPermissionView {
                 request_id: request_id.clone(),
-                tool_name: title.clone(),
+                tool_name: approval.title.clone(),
                 questions: None,
             })
             .collect()
+    }
+
+    fn pending_permission_input(&self, request_id: &str) -> Option<Value> {
+        self.pending_tool_approvals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(request_id)
+            .and_then(|approval| approval.input.clone())
     }
 }
 
@@ -5266,6 +5284,10 @@ mod tests {
         assert_eq!(open.len(), 1, "one open approval recovered, got {open:?}");
         assert_eq!(open[0].request_id, request_id, "recovered id == live request_id");
         assert_eq!(open[0].tool_name, "CommandExecution");
+        assert_eq!(
+            backend.pending_permission_input(&request_id).unwrap()["command"],
+            "rm -rf /"
+        );
         assert!(open[0].questions.is_none(), "codex approvals carry no question payload");
 
         // ANSWER: dispatch(AnswerPermission) → the registry entry is dropped.
@@ -5278,6 +5300,7 @@ mod tests {
             })
             .await
             .expect("AnswerPermission accepted");
+        assert!(backend.pending_permission_input(&request_id).is_none());
         assert!(
             backend.pending_permission_requests().is_empty(),
             "recovery list EMPTY after the approval is answered"

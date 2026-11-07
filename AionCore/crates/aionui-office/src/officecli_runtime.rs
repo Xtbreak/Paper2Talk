@@ -29,7 +29,7 @@ pub(crate) struct OfficecliInstallCommand {
     pub args: Vec<OsString>,
 }
 
-pub(crate) fn resolve_officecli_path() -> Option<PathBuf> {
+pub fn resolve_officecli_path() -> Option<PathBuf> {
     resolve_command_path("officecli").or_else(resolve_known_officecli_install_path)
 }
 

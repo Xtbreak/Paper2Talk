@@ -1,7 +1,8 @@
 import classNames from 'classnames';
 import { Button, Tooltip } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
-import { Experiment } from '@icon-park/react';
+import { isElectronDesktop } from '@/renderer/utils/platform';
+import { Experiment, Application, ArrowLeft } from '@icon-park/react';
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { usePreviewContext } from '@renderer/pages/conversation/Preview/context/PreviewContext';
@@ -14,6 +15,7 @@ import { SiderToolbar, SiderSearchEntry, SiderScheduledEntry, SiderAssistantEntr
 import SiderFooter from './SiderFooter';
 import TeamSiderSection from './TeamSiderSection';
 import siderStyles from './Sider.module.css';
+import PaperTalkHistory from './SiderNav/PaperTalkHistory';
 
 const WorkspaceGroupedHistory = React.lazy(() => import('@renderer/pages/conversation/GroupedHistory'));
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
@@ -35,8 +37,9 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const { logout, status } = useAuth();
   const { theme, setTheme } = useThemeContext();
   const [isBatchMode, setIsBatchMode] = useState(false);
+  const [showTools, setShowTools] = useState(false);
   const isSettings = pathname.startsWith('/settings');
-  const lastNonSettingsPathRef = useRef('/guid');
+  const lastNonSettingsPathRef = useRef(isElectronDesktop() ? '/paper-talk' : '/guid');
   const showLogout =
     typeof window !== 'undefined' && !(window as { electronAPI?: unknown }).electronAPI && status === 'authenticated';
 
@@ -63,7 +66,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     cleanupSiderTooltips();
     blurActiveElement();
     if (isSettings) {
-      const target = lastNonSettingsPathRef.current || '/guid';
+      const target = lastNonSettingsPathRef.current || (isElectronDesktop() ? '/paper-talk' : '/guid');
       Promise.resolve(navigate(target)).catch((error) => {
         console.error('Navigation failed:', error);
       });
@@ -185,84 +188,114 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           </Suspense>
         ) : (
           <div className='size-full flex flex-col gap-2px'>
-            <SiderToolbar
-              isMobile={isMobile}
-              isBatchMode={isBatchMode}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onNewChat={handleNewChat}
-              onToggleBatchMode={() => setIsBatchMode((prev) => !prev)}
-            />
-            {/* Search entry — desktop moves this into the titlebar toolbar;
-                mobile keeps it here in the sidebar. */}
-            {isMobile && (
-              <SiderSearchEntry
-                isMobile={isMobile}
-                collapsed={collapsed}
-                siderTooltipProps={siderTooltipProps}
-                onConversationSelect={handleConversationSelect}
-                onSessionClick={onSessionClick}
-              />
-            )}
-            {/* Assistant nav entry - fixed above Scheduled */}
-            <SiderAssistantEntry
-              isMobile={isMobile}
-              isActive={pathname.startsWith('/assistants')}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleAssistantClick}
-            />
-            {/* Scheduled tasks nav entry - fixed above scroll */}
-            <Tooltip content={t('common.modelBench.title')} position='right'>
+            {isElectronDesktop() && (
               <Button
-                type={pathname === '/model-bench' ? 'secondary' : 'text'}
-                className='w-full min-h-34px text-t-primary'
-                aria-label={t('common.modelBench.title')}
-                icon={<Experiment size={18} />}
+                type='text'
+                className={classNames(siderStyles.toolsToggle, !showTools && siderStyles.toolsAtBottom)}
+                icon={
+                  showTools ? (
+                    <ArrowLeft size={16} fill='currentColor' />
+                  ) : (
+                    <Application size={16} fill='currentColor' />
+                  )
+                }
+                aria-label={t(`common.paperTalk.${showTools ? 'backToReports' : 'moreTools'}`)}
                 onClick={() => {
-                  cleanupSiderTooltips();
-                  blurActiveElement();
-                  closePreview();
-                  setIsBatchMode(false);
-                  void navigate('/model-bench');
-                  onSessionClick?.();
+                  setShowTools(!showTools);
+                  if (showTools) {
+                    closePreview();
+                    void navigate('/paper-talk');
+                    onSessionClick?.();
+                  }
                 }}
               >
-                {!collapsed && t('common.modelBench.title')}
+                {!collapsed && t(`common.paperTalk.${showTools ? 'backToReports' : 'moreTools'}`)}
               </Button>
-            </Tooltip>
-            <SiderScheduledEntry
-              isMobile={isMobile}
-              isActive={pathname === '/scheduled'}
-              collapsed={collapsed}
-              siderTooltipProps={siderTooltipProps}
-              onClick={handleScheduledClick}
-            />
-            {/* Divider between fixed top nav and scrollable content area */}
-            <div
-              className={classNames(
-                'shrink-0 mt-6px mb-2px h-1px bg-[var(--color-border-2)]',
-                collapsed ? 'mx-6px' : 'mx-10px'
-              )}
-            />
-            {/* Scrollable content: pinned → team (slot) → projects → conversations */}
-            <div className={classNames('flex-1 min-h-0 overflow-y-auto', siderStyles.scrollArea)}>
-              <Suspense fallback={<div className='min-h-200px' />}>
-                <WorkspaceGroupedHistory
-                  {...workspaceHistoryProps}
-                  afterPinnedContent={
-                    <>
-                      <TeamSiderSection
-                        collapsed={collapsed}
-                        pathname={pathname}
-                        siderTooltipProps={siderTooltipProps}
-                        onSessionClick={onSessionClick}
-                      />
-                    </>
-                  }
+            )}
+            {isElectronDesktop() && !showTools ? (
+              <PaperTalkHistory collapsed={collapsed} onSessionClick={onSessionClick} />
+            ) : (
+              <>
+                <SiderToolbar
+                  isMobile={isMobile}
+                  isBatchMode={isBatchMode}
+                  collapsed={collapsed}
+                  siderTooltipProps={siderTooltipProps}
+                  onNewChat={handleNewChat}
+                  onToggleBatchMode={() => setIsBatchMode((prev) => !prev)}
                 />
-              </Suspense>
-            </div>
+                {/* Search entry — desktop moves this into the titlebar toolbar;
+                mobile keeps it here in the sidebar. */}
+                {isMobile && (
+                  <SiderSearchEntry
+                    isMobile={isMobile}
+                    collapsed={collapsed}
+                    siderTooltipProps={siderTooltipProps}
+                    onConversationSelect={handleConversationSelect}
+                    onSessionClick={onSessionClick}
+                  />
+                )}
+                {/* Assistant nav entry - fixed above Scheduled */}
+                <SiderAssistantEntry
+                  isMobile={isMobile}
+                  isActive={pathname.startsWith('/assistants')}
+                  collapsed={collapsed}
+                  siderTooltipProps={siderTooltipProps}
+                  onClick={handleAssistantClick}
+                />
+                {/* Scheduled tasks nav entry - fixed above scroll */}
+                <Tooltip content={t('common.modelBench.title')} position='right'>
+                  <Button
+                    type={pathname === '/model-bench' ? 'secondary' : 'text'}
+                    className={siderStyles.toolsToggle}
+                    aria-label={t('common.modelBench.title')}
+                    icon={<Experiment size={18} fill='currentColor' />}
+                    onClick={() => {
+                      cleanupSiderTooltips();
+                      blurActiveElement();
+                      closePreview();
+                      setIsBatchMode(false);
+                      void navigate('/model-bench');
+                      onSessionClick?.();
+                    }}
+                  >
+                    {!collapsed && t('common.modelBench.title')}
+                  </Button>
+                </Tooltip>
+                <SiderScheduledEntry
+                  isMobile={isMobile}
+                  isActive={pathname === '/scheduled'}
+                  collapsed={collapsed}
+                  siderTooltipProps={siderTooltipProps}
+                  onClick={handleScheduledClick}
+                />
+                {/* Divider between fixed top nav and scrollable content area */}
+                <div
+                  className={classNames(
+                    'shrink-0 mt-6px mb-2px h-1px bg-[var(--color-border-2)]',
+                    collapsed ? 'mx-6px' : 'mx-10px'
+                  )}
+                />
+                {/* Scrollable content: pinned → team (slot) → projects → conversations */}
+                <div className={classNames('flex-1 min-h-0 overflow-y-auto', siderStyles.scrollArea)}>
+                  <Suspense fallback={<div className='min-h-200px' />}>
+                    <WorkspaceGroupedHistory
+                      {...workspaceHistoryProps}
+                      afterPinnedContent={
+                        <>
+                          <TeamSiderSection
+                            collapsed={collapsed}
+                            pathname={pathname}
+                            siderTooltipProps={siderTooltipProps}
+                            onSessionClick={onSessionClick}
+                          />
+                        </>
+                      }
+                    />
+                  </Suspense>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -579,7 +579,14 @@ const createWindow = ({ showOnReady = true }: { showOnReady?: boolean } = {}): v
   }
 
   // Load the renderer: dev server URL in development, built HTML file in production
-  const rendererUrl = process.env['ELECTRON_RENDERER_URL'];
+  const rendererBase = process.env['ELECTRON_RENDERER_URL'];
+  let rendererUrl = rendererBase;
+  if (rendererBase && process.env.PAPER2TALK_START === '1') {
+    const url = new URL(rendererBase);
+    const report = process.env.PAPER2TALK_REPORT;
+    url.hash = report ? '/paper-talk?report=' + encodeURIComponent(report) : '/paper-talk';
+    rendererUrl = url.href;
+  }
   const fallbackFile = path.join(__dirname, '../renderer/index.html');
 
   if (!app.isPackaged && rendererUrl) {

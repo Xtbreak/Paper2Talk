@@ -250,6 +250,7 @@ const SendBox: React.FC<{
   rightTools?: React.ReactNode;
   prefix?: React.ReactNode;
   placeholder?: string;
+  inputHint?: string;
   onFilesAdded?: (files: FileMetadata[]) => void;
   supportedExts?: string[];
   defaultMultiLine?: boolean;
@@ -308,6 +309,7 @@ const SendBox: React.FC<{
   disabled,
   sendDisabled = false,
   placeholder,
+  inputHint,
   value: input = '',
   onChange: setInput = constVoid,
   onFilesAdded,
@@ -1845,11 +1847,13 @@ const SendBox: React.FC<{
    * truncate. The `@@` variant is phrased tighter instead, so it is no longer —
    * in most locales shorter — than the one it replaces.
    */
-  const sendboxHint = canMentionSessions
-    ? t('conversation.sendbox.hintWithSessions', {
-        defaultValue: 'Type / for commands, @ for files, @@ for conversations, ↑/↓ for history',
-      })
-    : t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' });
+  const sendboxHint =
+    inputHint ??
+    (canMentionSessions
+      ? t('conversation.sendbox.hintWithSessions', {
+          defaultValue: 'Type / for commands, @ for files, @@ for conversations, ↑/↓ for history',
+        })
+      : t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }));
 
   const mobilePlusButton = isMobileCompact ? (
     <Button
