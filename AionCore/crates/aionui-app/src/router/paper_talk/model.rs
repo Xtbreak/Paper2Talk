@@ -58,19 +58,18 @@ pub fn check_outline(slides: &[Slide], report: &Report, root: &Path) -> Result<(
                 "Each slide needs a title, speaking notes and duration".into(),
             ));
         }
-        if let Some(header) = slide.table.first() {
-            if slide.evidence.is_empty()
+        if let Some(header) = slide.table.first()
+            && (slide.evidence.is_empty()
                 || !(2..=4).contains(&header.len())
                 || !(2..=6).contains(&slide.table.len())
                 || slide
                     .table
                     .iter()
-                    .any(|row| row.len() != header.len() || row.iter().any(|v| v.trim().is_empty()))
-            {
-                return Err(ApiError::BadRequest(
-                    "Evidence table needs 2–4 columns and matching rows".into(),
-                ));
-            }
+                    .any(|row| row.len() != header.len() || row.iter().any(|v| v.trim().is_empty())))
+        {
+            return Err(ApiError::BadRequest(
+                "Evidence table needs 2–4 columns and matching rows".into(),
+            ));
         }
         for e in &slide.evidence {
             if !report.selected.contains(&e.paper)
@@ -82,15 +81,14 @@ pub fn check_outline(slides: &[Slide], report: &Report, root: &Path) -> Result<(
                 ));
             }
         }
-        if let Some(f) = &slide.figure {
-            if slide.evidence.is_empty()
+        if let Some(f) = &slide.figure
+            && (slide.evidence.is_empty()
                 || !inside(f, root)
-                || !f.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"))
-            {
-                return Err(ApiError::BadRequest(
-                    "Figure must be a report PNG with a source page".into(),
-                ));
-            }
+                || !f.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")))
+        {
+            return Err(ApiError::BadRequest(
+                "Figure must be a report PNG with a source page".into(),
+            ));
         }
     }
     Ok(())

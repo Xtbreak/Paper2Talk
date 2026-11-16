@@ -5,6 +5,7 @@ import { mutate } from 'swr';
 import { useTranslation } from 'react-i18next';
 import { usePreviewContext } from '../Preview';
 import {
+  activeReportKey,
   cancelPending,
   errorText,
   initialBrief,
@@ -51,8 +52,12 @@ export default function PaperTalkProvider({ reportId, children }: { reportId: st
     setError('');
     setDraft(next);
     setDirty(!!stored);
-    localStorage.setItem('paper-talk.active', r.id);
   }, []);
+  // Remember a mounted report once; a late save can finish after it was archived.
+  const openedId = report?.id;
+  useEffect(() => {
+    if (openedId) localStorage.setItem(activeReportKey, openedId);
+  }, [openedId]);
   useEffect(() => {
     let live = true;
     httpRequest<Report>('GET', root + '/' + reportId)

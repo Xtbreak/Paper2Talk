@@ -79,7 +79,10 @@ beforeEach(() => {
   getConversationOrNull.mockReset();
   listChangedCb = null;
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('conversation project_id backfill — responsive refetch on listChanged', () => {
   it('refetches on the backfill event and publishes the populated project_id (no poll)', async () => {
@@ -114,4 +117,23 @@ describe('conversation project_id backfill — responsive refetch on listChanged
     expect(getConversationOrNull).toHaveBeenCalledTimes(1);
     expect(getCurrentProject()).toBeNull();
   });
+});
+
+it('opens a fork in its ordinary project without reopening the parent report', async () => {
+  const fetch = vi.fn(() =>
+    Promise.resolve(Response.json({ code: 'CONVERSATION_ARCHIVED', error: 'Archived conversation' }, { status: 410 }))
+  );
+  vi.stubGlobal('fetch', fetch);
+  getConversationOrNull.mockResolvedValue({
+    ...conv('p1'),
+    extra: {
+      workspace: '/w',
+      paper_talk_report_id: 'parent-report',
+      fork: { parent_conversation_id: 'c0', parent_message_id: 'm1', parent_session_id: 's1' },
+    },
+  } as TChatConversation);
+  renderIndex();
+
+  await waitFor(() => expect(getCurrentProject()).toBe('p1'));
+  expect(fetch).not.toHaveBeenCalled();
 });

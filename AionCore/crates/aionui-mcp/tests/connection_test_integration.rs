@@ -2,7 +2,7 @@
 //!
 //! Tests from test-plan §2 (Connection Test):
 //! - CT-3: Command not found (ENOENT)
-//! - CT-4: URL not reachable
+//! - CT-4: Connection lost before a protocol response
 //! - CT-5: Needs OAuth authentication (401)
 //! - CT-6: Timeout
 //! - SSE auth probe (M-33 coverage)
@@ -16,11 +16,12 @@ use aionui_mcp::McpServerTransport;
 use aionui_realtime::BroadcastEventBus;
 
 fn make_service() -> McpConnectionTestService {
-    McpConnectionTestService::new(reqwest::Client::new(), Arc::new(BroadcastEventBus::new(16)))
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    McpConnectionTestService::new(client, Arc::new(BroadcastEventBus::new(16)))
 }
 
 fn make_service_with_timeout(timeout: Duration) -> McpConnectionTestService {
-    McpConnectionTestService::new(reqwest::Client::new(), Arc::new(BroadcastEventBus::new(16))).with_timeout(timeout)
+    make_service().with_timeout(timeout)
 }
 
 // ---------------------------------------------------------------------------
@@ -49,14 +50,25 @@ async fn stdio_nonexistent_command_returns_not_found_error() {
 }
 
 // ---------------------------------------------------------------------------
-// CT-4: URL not reachable
+// CT-4: Connection lost before a protocol response
 // ---------------------------------------------------------------------------
 
+async fn closed_peer(path: &str) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let connection = tokio::spawn(async move {
+        let (connection, _) = listener.accept().await.unwrap();
+        drop(connection);
+    });
+    (format!("http://{address}/{path}"), connection)
+}
+
 #[tokio::test]
-async fn http_unreachable_url_returns_connection_error() {
+async fn http_peer_closes_before_response_returns_connection_error() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
+    let (url, connection) = closed_peer("mcp").await;
     let transport = McpServerTransport::Http {
-        url: "http://127.0.0.1:1/mcp-unreachable".into(),
+        url,
         headers: HashMap::new(),
     };
 
@@ -68,13 +80,18 @@ async fn http_unreachable_url_returns_connection_error() {
         error.contains("Connection failed"),
         "expected connection failure in: {error}"
     );
+    tokio::time::timeout(Duration::from_secs(5), connection)
+        .await
+        .expect("the HTTP client should reach the test peer")
+        .unwrap();
 }
 
 #[tokio::test]
-async fn sse_unreachable_url_returns_connection_error() {
+async fn sse_peer_closes_before_response_returns_connection_error() {
     let svc = make_service_with_timeout(Duration::from_secs(5));
+    let (url, connection) = closed_peer("sse").await;
     let transport = McpServerTransport::Sse {
-        url: "http://127.0.0.1:1/sse-unreachable".into(),
+        url,
         headers: HashMap::new(),
     };
 
@@ -86,6 +103,10 @@ async fn sse_unreachable_url_returns_connection_error() {
         error.contains("Connection failed"),
         "expected connection failure in: {error}"
     );
+    tokio::time::timeout(Duration::from_secs(5), connection)
+        .await
+        .expect("the SSE client should reach the test peer")
+        .unwrap();
 }
 
 // ---------------------------------------------------------------------------

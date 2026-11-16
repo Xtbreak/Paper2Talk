@@ -1,49 +1,59 @@
+#![allow(
+    clippy::disallowed_types,
+    reason = "This private router module and its HTTP handler helpers return ApiError responses."
+)]
+
 mod deck;
 mod import;
+mod lifecycle;
 mod model;
 mod styles;
 
 use aionui_api_types::ApiResponse;
+use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, State},
     routing::{get, post},
 };
+use lifecycle::Store;
 use model::*;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
 };
-use tokio::{fs, sync::Mutex};
+use tokio::fs;
 use uuid::Uuid;
 
-#[derive(Clone)]
-struct Store {
-    root: PathBuf,
-    gate: Arc<Mutex<()>>,
-}
 type Response = Result<Json<ApiResponse<Report>>, ApiError>;
 
-pub(super) fn routes(root: PathBuf) -> Router {
+pub(super) fn routes(
+    root: std::path::PathBuf,
+    sidebar: std::sync::Arc<aionui_sidebar::SidebarService>,
+    conversations: aionui_conversation::ConversationService,
+    conversation_repo: std::sync::Arc<dyn aionui_db::IConversationRepository>,
+) -> Router {
+    let store = Store::new(root, sidebar, conversations, conversation_repo);
     Router::new()
-        .route("/api/paper-talk", get(list).post(create))
+        .route("/api/paper-talk", get(lifecycle::list).post(create))
         .route("/api/paper-talk/styles", get(styles::catalog))
         .route("/api/paper-talk/styles/{style}/preview", get(styles::preview))
-        .route("/api/paper-talk/{id}", get(get_report).put(edit))
+        .route(
+            "/api/paper-talk/{id}",
+            get(get_report).put(edit).delete(lifecycle::delete),
+        )
+        .route("/api/paper-talk/{id}/archive", post(lifecycle::archive))
+        .route("/api/paper-talk/{id}/unarchive", post(lifecycle::unarchive))
         .route("/api/paper-talk/{id}/conversation", post(bind_conversation))
         .route("/api/paper-talk/{id}/jobs", post(start))
         .route("/api/paper-talk/{id}/jobs/{job}/bind", post(bind))
         .route("/api/paper-talk/{id}/jobs/{job}/collect", post(collect))
         .route("/api/paper-talk/{id}/export", post(export))
         .route("/api/paper-talk/{id}/preview/{revision}/{page}", get(slide_preview))
-        .with_state(Store {
-            root,
-            gate: Default::default(),
-        })
+        .with_state(store)
 }
 
 fn invalid(e: impl std::fmt::Display) -> ApiError {
@@ -63,49 +73,6 @@ async fn write_json(path: &FsPath, value: &impl Serialize) -> Result<(), ApiErro
     fs::write(&tmp, bytes).await.map_err(io)?;
     fs::rename(tmp, path).await.map_err(io)
 }
-impl Store {
-    fn dir(&self, id: Uuid) -> PathBuf {
-        self.root.join(id.to_string())
-    }
-    async fn load(&self, id: Uuid) -> Result<Report, ApiError> {
-        let mut report: Report =
-            serde_json::from_slice(&fs::read(self.dir(id).join("report.json")).await.map_err(io)?).map_err(invalid)?;
-        report.workspace = fs::canonicalize(self.dir(id)).await.map_err(io)?;
-        Ok(report)
-    }
-    async fn save(&self, r: Report) -> Response {
-        write_json(
-            &self.dir(Uuid::parse_str(&r.id).map_err(invalid)?).join("report.json"),
-            &r,
-        )
-        .await?;
-        Ok(Json(ApiResponse::ok(r)))
-    }
-}
-async fn list(State(s): State<Store>) -> Result<Json<ApiResponse<Vec<Value>>>, ApiError> {
-    fs::create_dir_all(&s.root).await.map_err(io)?;
-    let mut entries = fs::read_dir(&s.root).await.map_err(io)?;
-    let mut rows = vec![];
-    while let Some(entry) = entries.next_entry().await.map_err(io)? {
-        if let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) {
-            if fs::try_exists(entry.path().join("report.json")).await.map_err(io)? {
-                let r = s.load(id).await?;
-                let modified = entry
-                    .path()
-                    .join("report.json")
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .map_err(io)?;
-                rows.push((
-                    modified,
-                    json!({"id":id,"direction":r.brief.direction,"conversation":r.conversation}),
-                ));
-            }
-        }
-    }
-    rows.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
-    Ok(Json(ApiResponse::ok(rows.into_iter().map(|(_, r)| r).collect())))
-}
 async fn create(State(s): State<Store>, Json(mut brief): Json<Brief>) -> Response {
     check_brief(&brief)?;
     let id = Uuid::new_v4();
@@ -115,6 +82,7 @@ async fn create(State(s): State<Store>, Json(mut brief): Json<Brief>) -> Respons
         id: id.to_string(),
         workspace: fs::canonicalize(s.dir(id)).await.map_err(io)?,
         conversation: None,
+        archived: false,
         revision: 1,
         brief,
         papers: vec![],
@@ -129,10 +97,15 @@ async fn create(State(s): State<Store>, Json(mut brief): Json<Brief>) -> Respons
     })
     .await
 }
-async fn get_report(State(s): State<Store>, Path(id): Path<Uuid>) -> Response {
-    Ok(Json(ApiResponse::ok(s.load(id).await?)))
+async fn get_report(State(s): State<Store>, Extension(user): Extension<CurrentUser>, Path(id): Path<Uuid>) -> Response {
+    Ok(Json(ApiResponse::ok(s.load_active(&user.id, id).await?)))
 }
-async fn bind_conversation(State(s): State<Store>, Path(id): Path<Uuid>, Json(b): Json<Binding>) -> Response {
+async fn bind_conversation(
+    State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<Binding>,
+) -> Response {
     if b.conversation.is_empty()
         || b.conversation.len() > 128
         || !b
@@ -143,15 +116,16 @@ async fn bind_conversation(State(s): State<Store>, Path(id): Path<Uuid>, Json(b)
         return Err(invalid("Invalid conversation identity"));
     }
     let _guard = s.gate.lock().await;
-    let mut r = s.load(id).await?;
-    if r.conversation
-        .as_ref()
-        .is_some_and(|existing| existing != &b.conversation)
-    {
-        return Err(ApiError::Conflict("Report already belongs to a conversation".into()));
+    let mut r = s.load_active(&user.id, id).await?;
+    if let Some(existing) = &r.conversation {
+        if existing != &b.conversation {
+            return Err(ApiError::Conflict("Report already belongs to a conversation".into()));
+        }
+        return Ok(Json(ApiResponse::ok(r)));
     }
+    s.check_binding(&user.id, &b.conversation, &r).await?;
     r.conversation = Some(b.conversation);
-    s.save(r).await
+    s.save_active(&user.id, r).await
 }
 fn revision(r: &Report, expected: u64) -> Result<(), ApiError> {
     if r.revision != expected {
@@ -160,9 +134,14 @@ fn revision(r: &Report, expected: u64) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn edit(State(s): State<Store>, Path(id): Path<Uuid>, Json(mut e): Json<Edit>) -> Response {
+async fn edit(
+    State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<Uuid>,
+    Json(mut e): Json<Edit>,
+) -> Response {
     let _guard = s.gate.lock().await;
-    let mut r = s.load(id).await?;
+    let mut r = s.load_active(&user.id, id).await?;
     revision(&r, e.revision)?;
     check_brief(&e.brief)?;
     import::snapshot(&mut e.brief, &s.dir(id)).await?;
@@ -186,12 +165,17 @@ async fn edit(State(s): State<Store>, Path(id): Path<Uuid>, Json(mut e): Json<Ed
     r.deck = None;
     r.job = None;
     r.revision += 1;
-    s.save(r).await
+    s.save_active(&user.id, r).await
 }
 
-async fn start(State(s): State<Store>, Path(id): Path<Uuid>, Json(req): Json<Start>) -> Response {
+async fn start(
+    State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<Start>,
+) -> Response {
     let _guard = s.gate.lock().await;
-    let mut r = s.load(id).await?;
+    let mut r = s.load_active(&user.id, id).await?;
     revision(&r, req.revision)?;
     if req.stage == Stage::Search && r.brief.direction.trim().is_empty() {
         return Err(invalid("Provide a research direction first"));
@@ -269,7 +253,7 @@ async fn start(State(s): State<Store>, Path(id): Path<Uuid>, Json(req): Json<Sta
         conversation: r.conversation.clone(),
         instruction: req.instruction,
     });
-    s.save(r).await
+    s.save_active(&user.id, r).await
 }
 fn current(r: &Report, id: Uuid) -> Result<&Job, ApiError> {
     r.job
@@ -278,9 +262,14 @@ fn current(r: &Report, id: Uuid) -> Result<&Job, ApiError> {
         .ok_or_else(|| ApiError::Conflict("Superseded task".into()))
 }
 
-async fn bind(State(s): State<Store>, Path((id, job)): Path<(Uuid, Uuid)>, Json(b): Json<Binding>) -> Response {
+async fn bind(
+    State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, job)): Path<(Uuid, Uuid)>,
+    Json(b): Json<Binding>,
+) -> Response {
     let _guard = s.gate.lock().await;
-    let mut r = s.load(id).await?;
+    let mut r = s.load_active(&user.id, id).await?;
     if current(&r, job)?
         .conversation
         .as_ref()
@@ -291,12 +280,16 @@ async fn bind(State(s): State<Store>, Path((id, job)): Path<(Uuid, Uuid)>, Json(
     if let Some(j) = r.job.as_mut() {
         j.conversation = Some(b.conversation);
     }
-    s.save(r).await
+    s.save_active(&user.id, r).await
 }
 
-async fn collect(State(s): State<Store>, Path((id, job)): Path<(Uuid, Uuid)>) -> Response {
+async fn collect(
+    State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, job)): Path<(Uuid, Uuid)>,
+) -> Response {
     let guard = s.gate.lock().await;
-    let mut r = s.load(id).await?;
+    let mut r = s.load_active(&user.id, id).await?;
     let task = current(&r, job)?.clone();
     let file = task.workspace.join("result.json");
     if !fs::try_exists(&file).await.map_err(io)? {
@@ -309,7 +302,7 @@ async fn collect(State(s): State<Store>, Path((id, job)): Path<(Uuid, Uuid)>) ->
     if result.get("export").is_some() {
         check_export_confirmation(&result, &r, &task)?;
         drop(guard);
-        return publish_deck(s, id, r, task, &result).await;
+        return publish_deck(s, &user.id, id, r, task, &result).await;
     }
     let request_text = task.instruction.clone();
     let previous_style = r.brief.style.clone();
@@ -349,7 +342,7 @@ async fn collect(State(s): State<Store>, Path((id, job)): Path<(Uuid, Uuid)>) ->
         if previous_style != r.brief.style && !r.outline.is_empty() && r.outline_current {
             record_card(&mut r, "outline");
         }
-        return s.save(r).await;
+        return s.save_active(&user.id, r).await;
     }
     if result.get("selected").is_some() && result.get("papers").is_none() && result.get("outline").is_none() {
         result["papers"] = serde_json::to_value(&r.papers).map_err(invalid)?;
@@ -489,11 +482,16 @@ async fn collect(State(s): State<Store>, Path((id, job)): Path<(Uuid, Uuid)>) ->
         "papers"
     };
     record_card(&mut r, kind);
-    s.save(r).await
+    s.save_active(&user.id, r).await
 }
 
-async fn export(State(s): State<Store>, Path(id): Path<Uuid>, Json(req): Json<Confirm>) -> Response {
-    let r = s.load(id).await?;
+async fn export(
+    State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<Confirm>,
+) -> Response {
+    let r = s.load_active(&user.id, id).await?;
     revision(&r, req.revision)?;
     if r.job.is_some() || !r.outline_current {
         return Err(invalid("Confirm the current outline first"));
@@ -501,14 +499,26 @@ async fn export(State(s): State<Store>, Path(id): Path<Uuid>, Json(req): Json<Co
     Err(invalid("请在聊天中确认当前大纲并生成 PPT"))
 }
 
-async fn publish_deck(s: Store, id: Uuid, r: Report, task: Job, result: &Value) -> Response {
+async fn publish_deck(s: Store, user_id: &str, id: Uuid, r: Report, task: Job, result: &Value) -> Response {
     check_outline(&r.outline, &r, &s.dir(id))?;
     tracing::info!(report_id = %id, revision = r.revision, via_chat = true, "paper talk export started");
     let path = s.dir(id).join(format!("Paper2Talk-{}.pptx", Uuid::new_v4()));
-    deck::build(&r, result, &task.workspace, &path).await?;
+    let built = deck::build(&r, result, &task.workspace, &path).await.map(|()| path);
+    finish_publish(&s, user_id, id, r.revision, task, built).await
+}
+
+async fn finish_publish(
+    s: &Store,
+    user_id: &str,
+    id: Uuid,
+    expected_revision: u64,
+    task: Job,
+    built: Result<PathBuf, ApiError>,
+) -> Response {
     let _guard = s.gate.lock().await;
-    let mut latest = s.load(id).await?;
-    revision(&latest, r.revision)?;
+    let mut latest = s.load_active(user_id, id).await?;
+    let path = built?;
+    revision(&latest, expected_revision)?;
     {
         current(&latest, Uuid::parse_str(&task.id).map_err(invalid)?)?;
         latest.job = None;
@@ -523,19 +533,19 @@ async fn publish_deck(s: Store, id: Uuid, r: Report, task: Job, result: &Value) 
     remember_export(&mut latest);
     record_card(&mut latest, "deck");
     tracing::info!(report_id = %id, revision = latest.revision, "paper talk export published");
-    s.save(latest).await
+    s.save_active(user_id, latest).await
 }
 
 fn record_card(report: &mut Report, kind: &str) {
-    if kind == "outline" {
-        if let Some(previous) = report.cards.last_mut().filter(|card| card.kind == "papers") {
-            previous.selected = report
-                .selected
-                .iter()
-                .filter(|id| previous.papers.iter().any(|paper| &paper.id == *id))
-                .cloned()
-                .collect();
-        }
+    if kind == "outline"
+        && let Some(previous) = report.cards.last_mut().filter(|card| card.kind == "papers")
+    {
+        previous.selected = report
+            .selected
+            .iter()
+            .filter(|id| previous.papers.iter().any(|paper| &paper.id == *id))
+            .cloned()
+            .collect();
     }
     report.cards.push(ChoiceCard {
         id: Uuid::new_v4().to_string(),
@@ -568,9 +578,10 @@ fn remember_export(r: &mut Report) {
 
 async fn slide_preview(
     State(s): State<Store>,
+    Extension(user): Extension<CurrentUser>,
     Path((id, version, page)): Path<(Uuid, u64, usize)>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
-    let r = s.load(id).await?;
+    let r = s.load_active(&user.id, id).await?;
     let (path, page_count) = if let Some(old) = r.published.as_ref().filter(|p| p.revision == version) {
         (old.path.clone(), old.slides.len())
     } else if let Some(card) = r

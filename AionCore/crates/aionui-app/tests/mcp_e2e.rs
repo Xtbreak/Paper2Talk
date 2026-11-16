@@ -5,6 +5,8 @@
 
 mod common;
 
+use aionui_app::{AppConfig, AppServices, build_module_states, create_router_with_states};
+use aionui_mcp::McpConnectionTestService;
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
@@ -44,22 +46,40 @@ async fn connection_test_enoent_command() {
 }
 
 // ===========================================================================
-// CT-4: Connection test — unreachable URL
+// CT-4: Connection test — TCP peer closes before the HTTP handshake
 // ===========================================================================
 
 #[tokio::test]
-async fn connection_test_unreachable_url() {
-    let (mut app, services) = build_app().await;
+async fn connection_test_peer_closes_before_http_handshake() {
+    let temporary = tempfile::tempdir().unwrap();
+    let config = AppConfig {
+        data_dir: temporary.path().to_path_buf(),
+        work_dir: temporary.path().to_path_buf(),
+        ..Default::default()
+    };
+    let database = aionui_db::init_database_memory().await.unwrap();
+    let services = AppServices::from_config(database, &config).await.unwrap();
+    let (mut states, _) = build_module_states(&services).await.unwrap();
+    let http_client = reqwest::Client::builder().no_proxy().build().unwrap();
+    states.mcp.connection_test_service = McpConnectionTestService::new(http_client, services.event_bus.clone());
+    let mut app = create_router_with_states(&services, states);
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
+    // Hold a private port and close the connection before returning any HTTP response.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let close_connection = tokio::spawn(async move {
+        let (connection, _) = listener.accept().await.unwrap();
+        drop(connection);
+    });
     let req = json_with_token(
         "POST",
         "/api/mcp/test-connection",
         json!({
-            "name": "unreachable-test",
+            "name": "closed-peer-test",
             "transport": {
                 "type": "http",
-                "url": "http://127.0.0.1:19999/mcp"
+                "url": format!("http://{address}/mcp")
             }
         }),
         &token,
@@ -73,6 +93,10 @@ async fn connection_test_unreachable_url() {
     assert_eq!(json["code"], "MCP_CONNECTION_FAILED");
     assert_eq!(json["details"]["transport"], "http");
     assert!(!json["error"].as_str().unwrap().is_empty());
+    tokio::time::timeout(std::time::Duration::from_secs(5), close_connection)
+        .await
+        .expect("the HTTP client should reach the test peer")
+        .unwrap();
 }
 
 // ===========================================================================

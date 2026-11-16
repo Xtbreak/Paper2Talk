@@ -14,6 +14,7 @@ use aionui_db::{
     SqliteSidebarStore, SqliteUserOrderStore, init_database_memory,
 };
 use aionui_project::canonical;
+use aionui_realtime::BroadcastEventBus;
 use async_trait::async_trait;
 use tempfile::TempDir;
 
@@ -29,6 +30,7 @@ struct Fixture {
     db: Database,
     _tmp: TempDir,
     service: SidebarService,
+    event_bus: Arc<BroadcastEventBus>,
 }
 
 impl Fixture {
@@ -58,8 +60,14 @@ async fn fixture() -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let sidebar: Arc<dyn ISidebarStore> = Arc::new(SqliteSidebarStore::new(db.pool().clone()));
     let user_order: Arc<dyn IUserOrderStore> = Arc::new(SqliteUserOrderStore::new(db.pool().clone()));
-    let service = SidebarService::new(sidebar, user_order, tmp.path().to_path_buf());
-    Fixture { db, _tmp: tmp, service }
+    let event_bus = Arc::new(BroadcastEventBus::new(16));
+    let service = SidebarService::new(sidebar, user_order, event_bus.clone(), tmp.path().to_path_buf());
+    Fixture {
+        db,
+        _tmp: tmp,
+        service,
+        event_bus,
+    }
 }
 
 // -- Seed helpers (raw SQL; mirrors sqlite_sidebar_test.rs) -------------------
@@ -1254,6 +1262,32 @@ async fn archive_conversation_moves_slice_and_unpins() {
     );
 }
 
+#[tokio::test]
+async fn archive_commits_updates_even_when_unpin_fails() {
+    let fx = fixture().await;
+    insert_conv(fx.pool(), USER, "c1", None, "{}", 100).await;
+    fx.service.pin(USER, "pinned", "conversation", "c1").await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_unpin BEFORE DELETE ON user_order WHEN OLD.item_id = 'c1' \
+         BEGIN SELECT RAISE(ABORT, 'forced unpin failure'); END",
+    )
+    .execute(fx.pool())
+    .await
+    .unwrap();
+    let mut events = fx.event_bus.subscribe();
+
+    let error = fx.service.archive_conversation(USER, "c1").await.unwrap_err();
+    assert!(matches!(error, SidebarError::Db(_)));
+    assert!(error.to_string().contains("forced unpin failure"));
+    assert!(conv_archived_at(fx.pool(), "c1").await.is_some());
+    let event = events.try_recv().expect("committed state should reach clients");
+    assert_eq!(event.name, "conversation.listChanged");
+    assert_eq!(
+        event.data,
+        serde_json::json!({"user_id": USER, "conversation_id": "c1", "action": "updated"})
+    );
+}
+
 /// Archiving a conversation tears down its agent process (like delete) but,
 /// unlike delete, keeps the row: only `archived_at` flips, the conversation is
 /// still on disk (unarchiving cold-starts a fresh agent).
@@ -1547,6 +1581,31 @@ async fn seed_project_construct(fx: &Fixture) {
     insert_member(pool, USER, "m2", "T1", 160).await;
     insert_conv_ws(pool, USER, "c4", "/repo/other", 70).await; // dir group -> keep
     insert_conv_ws(pool, USER, "c5", &fx.temp_workspace("s"), 60).await; // chats -> keep
+}
+
+#[tokio::test]
+async fn project_archive_commits_updates_for_each_affected_conversation() {
+    let fx = fixture().await;
+    seed_project_construct(&fx).await;
+    let mut events = fx.event_bus.subscribe();
+
+    for archived in [true, false] {
+        if archived {
+            fx.service.archive_project(USER, "proj-std").await.unwrap();
+        } else {
+            fx.service.unarchive_project(USER, "proj-std").await.unwrap();
+        }
+        let mut updated = HashSet::new();
+        while let Ok(event) = events.try_recv() {
+            assert_eq!(event.name, "conversation.listChanged");
+            assert_eq!(event.data["user_id"], USER);
+            assert_eq!(event.data["action"], "updated");
+            let id = event.data["conversation_id"].as_str().unwrap();
+            assert_eq!(conv_archived_at(fx.pool(), id).await.is_some(), archived);
+            assert!(updated.insert(id.to_owned()), "duplicate event for {id}");
+        }
+        assert_eq!(updated, HashSet::from(["c1".into(), "c3".into()]));
+    }
 }
 
 /// `archive_project` archives the whole visible construct in one call (bound +

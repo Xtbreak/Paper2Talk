@@ -26,7 +26,9 @@ const ChatConversationIndex: React.FC = () => {
   const { data, isLoading, mutate } = useSWR(id ? `conversation/${id}` : null, () => {
     return getConversationOrNull(id!);
   });
-  const reportId = (data?.extra as { paper_talk_report_id?: string } | undefined)?.paper_talk_report_id;
+  const extra = data?.extra as { paper_talk_report_id?: string; fork?: unknown } | undefined;
+  // Forks inherit extra metadata but do not own the parent's report.
+  const reportId = extra?.fork ? undefined : extra?.paper_talk_report_id;
 
   // Close preview only when the isolation scope changes, not on every
   // conversation switch. Same-scope conversations keep the preview open. The

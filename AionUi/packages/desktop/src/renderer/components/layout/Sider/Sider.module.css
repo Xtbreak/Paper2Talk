@@ -63,10 +63,20 @@
   flex-shrink: 0;
 }
 
-.historyHeading {
-  padding: 28px 10px 10px;
-  font-size: 12px;
-  color: var(--color-text-3);
+.historyViews {
+  padding-block: 16px 8px;
+}
+
+.historyViews :global(.arco-btn-group) {
+  display: flex;
+}
+
+.historyViews :global(.arco-btn-group) :global(.arco-btn) {
+  flex: 1;
+  min-width: 0;
+  padding-inline: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .reportList {
@@ -88,16 +98,58 @@
   border-radius: 8px;
 }
 
-.reportRow {
+.reportItem {
+  display: flex;
+  align-items: center;
   margin: 3px 0;
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.reportRow,
+.archivedReportTitle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   min-height: 42px;
+  gap: 8px;
+  align-items: center;
+  padding-inline: 10px;
   text-align: start;
 }
 
-.reportRow[data-active='true'] {
+.reportRow > span,
+.archivedReportTitle > :first-child {
+  min-width: 0;
+}
+
+.archivedReportTitle {
+  color: var(--color-text-2);
+}
+
+.reportItem[data-active='true'] {
   background: var(--color-fill-3);
+}
+
+.reportItem[data-active='true'] .reportRow {
   color: var(--color-text-1);
   font-weight: 500;
+}
+
+.reportActions {
+  flex: none;
+  margin-inline-end: 4px;
+  color: var(--color-text-2);
+}
+
+.deleteReportAction {
+  color: rgb(var(--danger-6));
+}
+
+.reportNavigation[data-collapsed='true'] .reportRow,
+.reportNavigation[data-collapsed='true'] .archivedReportTitle {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 .reportName {
@@ -114,8 +166,11 @@
   margin-top: 8px;
 }
 
-.historyEmpty,
-
+.historyEmpty {
+  margin: 8px 10px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
 :global(.group):hover .pinnedTextSlot {
   padding-inline-end: 18px;

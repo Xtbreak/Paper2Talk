@@ -3,8 +3,31 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode},
 };
+use std::path::PathBuf;
 use tempfile::tempdir;
 use tower::ServiceExt;
+
+async fn test_routes(root: PathBuf) -> (Router, crate::AppServices) {
+    let data_dir = root.join(".app-data");
+    fs::create_dir_all(&data_dir).await.unwrap();
+    let config = crate::AppConfig {
+        data_dir: data_dir.clone(),
+        work_dir: data_dir,
+        local: true,
+        ..Default::default()
+    };
+    let database = aionui_db::init_database_memory().await.unwrap();
+    let services = crate::AppServices::from_config(database, &config).await.unwrap();
+    let sidebar = crate::router::state::build_sidebar_state(&services);
+    let router = routes(
+        root,
+        sidebar.service,
+        services.conversation_service.clone(),
+        services.conversation_repo.clone(),
+    )
+    .layer(Extension(CurrentUser::local_default()));
+    (router, services)
+}
 
 async fn call(router: &Router, method: Method, path: &str, data: Value) -> (StatusCode, Value) {
     let req = Request::builder()
@@ -20,6 +43,21 @@ async fn call(router: &Router, method: Method, path: &str, data: Value) -> (Stat
 }
 fn brief() -> Value {
     json!({"direction":"science","intent":"compare methods","count":3,"minutes":10,"region":"international","months":12,"strict_quartile":true,"style":"international","inputs":[]})
+}
+
+async fn create_report_conversation(services: &crate::AppServices, report: &Value) -> String {
+    services
+        .conversation_service
+        .create(
+            &CurrentUser::local_default().id,
+            serde_json::from_value(json!({"type":"acp","extra":{
+                "backend":"codex", "workspace":report["workspace"], "paper_talk_report_id":report["id"]
+            }}))
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .id
 }
 
 #[test]
@@ -46,7 +84,7 @@ fn slide_design_rejects_outside_annotations_and_misleading_axes() {
 #[tokio::test]
 async fn snapshot_survives_source_removal_and_late_jobs_cannot_publish() {
     let tmp = tempdir().unwrap();
-    let router = routes(tmp.path().join("reports"));
+    let (router, _) = test_routes(tmp.path().join("reports")).await;
     let mut input = brief();
     let pdf = tmp.path().join("input.pdf");
     fs::write(&pdf, b"%PDF-1.7 fixture").await.unwrap();
@@ -92,7 +130,7 @@ async fn snapshot_survives_source_removal_and_late_jobs_cannot_publish() {
 #[tokio::test]
 async fn collection_separates_unverified_articles_and_records_clarifications() {
     let tmp = tempdir().unwrap();
-    let router = routes(tmp.path().join("reports"));
+    let (router, _) = test_routes(tmp.path().join("reports")).await;
     let (_, reply) = call(&router, Method::POST, "/api/paper-talk", brief()).await;
     let url = format!("/api/paper-talk/{}", reply["data"]["id"].as_str().unwrap());
     let (_, first) = call(
@@ -200,7 +238,7 @@ async fn collection_separates_unverified_articles_and_records_clarifications() {
 #[tokio::test]
 async fn chat_export_requires_the_confirmed_current_revision_without_other_changes() {
     let tmp = tempdir().unwrap();
-    let router = routes(tmp.path().join("reports"));
+    let (router, _) = test_routes(tmp.path().join("reports")).await;
     let (_, reply) = call(&router, Method::POST, "/api/paper-talk", brief()).await;
     let url = format!("/api/paper-talk/{}", reply["data"]["id"].as_str().unwrap());
     let (_, started) = call(
@@ -270,14 +308,14 @@ async fn chat_export_requires_the_confirmed_current_revision_without_other_chang
 #[tokio::test]
 async fn native_conversation_survives_intake_and_task_changes() {
     let tmp = tempdir().unwrap();
-    let router = routes(tmp.path().join("reports"));
+    let (router, services) = test_routes(tmp.path().join("reports")).await;
     let mut input = brief();
     input["direction"] = json!("");
     let (status, reply) = call(&router, Method::POST, "/api/paper-talk", input.clone()).await;
     assert_eq!(status, StatusCode::OK);
     let url = format!("/api/paper-talk/{}", reply["data"]["id"].as_str().unwrap());
     let workspace = FsPath::new(reply["data"]["workspace"].as_str().unwrap());
-    let conversation = "7465919e";
+    let conversation = create_report_conversation(&services, &reply["data"]).await;
     let (status, _) = call(
         &router,
         Method::POST,
@@ -341,6 +379,62 @@ async fn native_conversation_survives_intake_and_task_changes() {
     assert_ne!(next["data"]["job"]["workspace"], job["workspace"]);
 }
 
+#[tokio::test]
+async fn finishing_export_rechecks_report_lifecycle_before_saving() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().join("reports");
+    let (router, services) = test_routes(root.clone()).await;
+    let (_, reply) = call(&router, Method::POST, "/api/paper-talk", brief()).await;
+    let id = Uuid::parse_str(reply["data"]["id"].as_str().unwrap()).unwrap();
+    let path = format!("/api/paper-talk/{id}");
+    let conversation = create_report_conversation(&services, &reply["data"]).await;
+    let (status, _) = call(
+        &router,
+        Method::POST,
+        &format!("{path}/conversation"),
+        json!({"conversation":conversation}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, started) = call(
+        &router,
+        Method::POST,
+        &format!("{path}/jobs"),
+        json!({"revision":1,"stage":"revise","instruction":"export a deck"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let started: Report = serde_json::from_value(started["data"].clone()).unwrap();
+    let task = started.job.unwrap();
+
+    let user = CurrentUser::local_default();
+    let sidebar = crate::router::state::build_sidebar_state(&services).service;
+    let store = Store::new(
+        root,
+        sidebar.clone(),
+        services.conversation_service.clone(),
+        services.conversation_repo.clone(),
+    );
+    let manifest = started.workspace.join("report.json");
+    let previous = fs::read(&manifest).await.unwrap();
+    let built = started.workspace.join("rendered.pptx");
+    fs::write(&built, b"simulated render result").await.unwrap();
+
+    sidebar.archive_conversation(&user.id, &conversation).await.unwrap();
+    let result = finish_publish(&store, &user.id, id, started.revision, task.clone(), Ok(built.clone())).await;
+    assert!(matches!(result, Err(ApiError::ConversationArchived(_))));
+    assert_eq!(fs::read(&manifest).await.unwrap(), previous);
+
+    services
+        .conversation_service
+        .delete(&user.id, &conversation)
+        .await
+        .unwrap();
+    let result = finish_publish(&store, &user.id, id, started.revision, task, Ok(built)).await;
+    assert!(matches!(result, Err(ApiError::NotFound(_))));
+    assert_eq!(fs::read(&manifest).await.unwrap(), previous);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn report_and_task_workspaces_resolve_symlinked_data_roots() {
@@ -349,7 +443,7 @@ async fn report_and_task_workspaces_resolve_symlinked_data_roots() {
     fs::create_dir(&actual).await.unwrap();
     let alias = tmp.path().join("alias");
     std::os::unix::fs::symlink(&actual, &alias).unwrap();
-    let router = routes(alias);
+    let (router, _) = test_routes(alias).await;
     let (_, reply) = call(&router, Method::POST, "/api/paper-talk", brief()).await;
     let r = &reply["data"];
     let id = r["id"].as_str().unwrap();
@@ -390,7 +484,7 @@ async fn generation_requires_current_task_artifacts_instead_of_fixed_layout_expo
 async fn selecting_an_existing_paper_and_outlining_it_is_atomic() {
     for strict in [false, true] {
         let tmp = tempdir().unwrap();
-        let router = routes(tmp.path().to_path_buf());
+        let (router, _) = test_routes(tmp.path().to_path_buf()).await;
         let mut input = brief();
         input["strict_quartile"] = json!(strict);
         let (_, reply) = call(&router, Method::POST, "/api/paper-talk", input).await;
@@ -438,7 +532,7 @@ async fn selecting_an_existing_paper_and_outlining_it_is_atomic() {
 #[tokio::test]
 async fn visual_cards_preserve_history_and_styles_reach_the_task() {
     let tmp = tempdir().unwrap();
-    let router = routes(tmp.path().join("reports"));
+    let (router, _) = test_routes(tmp.path().join("reports")).await;
     let (_, reply) = call(&router, Method::POST, "/api/paper-talk", brief()).await;
     let mut report: Report = serde_json::from_value(reply["data"].clone()).unwrap();
     record_card(&mut report, "papers");
@@ -447,9 +541,21 @@ async fn visual_cards_preserve_history_and_styles_reach_the_task() {
     assert!(report.cards[0].created_at > 0);
     assert!(styles::valid("handdrawn-technical"));
     assert!(!styles::valid("../../secret"));
-    styles::write_selection("handdrawn-technical", tmp.path()).await.unwrap();
-    assert!(fs::read_to_string(tmp.path().join("selected-style.md")).await.unwrap().contains("手绘"));
-    assert!(fs::read(tmp.path().join("selected-style.png")).await.unwrap().starts_with(b"\x89PNG"));
+    styles::write_selection("handdrawn-technical", tmp.path())
+        .await
+        .unwrap();
+    assert!(
+        fs::read_to_string(tmp.path().join("selected-style.md"))
+            .await
+            .unwrap()
+            .contains("手绘")
+    );
+    assert!(
+        fs::read(tmp.path().join("selected-style.png"))
+            .await
+            .unwrap()
+            .starts_with(b"\x89PNG")
+    );
     let (status, catalog) = call(&router, Method::GET, "/api/paper-talk/styles", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(catalog["data"].as_array().unwrap().len(), 12);
@@ -458,15 +564,32 @@ async fn visual_cards_preserve_history_and_styles_reach_the_task() {
 #[tokio::test]
 async fn style_choice_accepts_a_brief_with_summary_without_rebuilding_the_outline() {
     let tmp = tempdir().unwrap();
-    let router = routes(tmp.path().join("reports"));
+    let (router, _) = test_routes(tmp.path().join("reports")).await;
     let (_, created) = call(&router, Method::POST, "/api/paper-talk", brief()).await;
     let url = format!("/api/paper-talk/{}", created["data"]["id"].as_str().unwrap());
-    let (_, started) = call(&router, Method::POST, &format!("{url}/jobs"), json!({"revision":1,"stage":"revise","instruction":"手绘技术解释风"})).await;
+    let (_, started) = call(
+        &router,
+        Method::POST,
+        &format!("{url}/jobs"),
+        json!({"revision":1,"stage":"revise","instruction":"手绘技术解释风"}),
+    )
+    .await;
     let job = &started["data"]["job"];
     let mut chosen = brief();
     chosen["style"] = json!("handdrawn-technical");
-    write_json(&PathBuf::from(job["workspace"].as_str().unwrap()).join("result.json"), &json!({"brief":chosen,"summary":"已选择手绘技术解释风"})).await.unwrap();
-    let (status, saved) = call(&router, Method::POST, &format!("{url}/jobs/{}/collect", job["id"].as_str().unwrap()), Value::Null).await;
+    write_json(
+        &PathBuf::from(job["workspace"].as_str().unwrap()).join("result.json"),
+        &json!({"brief":chosen,"summary":"已选择手绘技术解释风"}),
+    )
+    .await
+    .unwrap();
+    let (status, saved) = call(
+        &router,
+        Method::POST,
+        &format!("{url}/jobs/{}/collect", job["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["data"]["brief"]["style"], "handdrawn-technical");
     assert_eq!(saved["data"]["outline"], json!([]));

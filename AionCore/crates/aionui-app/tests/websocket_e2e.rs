@@ -401,6 +401,78 @@ async fn t4_1_scoped_event_reaches_only_matching_user() {
 }
 
 #[tokio::test]
+async fn sidebar_archive_and_restore_publish_owner_scoped_conversation_updates() {
+    use aionui_common::constants::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME};
+
+    let app = start_app().await;
+    let user = "archive-owner";
+    let other = "archive-other";
+    let conversation = "sidebar-archive-conversation";
+    let owner_token = sign_token(&app, user).await;
+    let other_token = sign_token(&app, other).await;
+    sqlx::query(
+        "INSERT INTO conversations (id, user_id, name, type, extra, created_at, updated_at) \
+         VALUES (?, ?, 'Archive fixture', 'acp', '{}', 0, 0)",
+    )
+    .bind(conversation)
+    .bind(user)
+    .execute(app.services.database.pool())
+    .await
+    .unwrap();
+
+    let (_, mut owner_rx) = connect_bearer(app.addr, &owner_token).await;
+    let (_, mut other_rx) = connect_bearer(app.addr, &other_token).await;
+    wait_for_clients(&app, 2).await;
+
+    let http = reqwest::Client::new();
+    let csrf = "sidebar-archive-fixture";
+    for action in ["archive", "unarchive"] {
+        for (id, token, expected) in [
+            (conversation, &owner_token, reqwest::StatusCode::OK),
+            (conversation, &other_token, reqwest::StatusCode::NOT_FOUND),
+            ("missing-conversation", &owner_token, reqwest::StatusCode::NOT_FOUND),
+        ] {
+            let response = http
+                .post(format!("http://{}/api/sidebar/conversation/{id}/{action}", app.addr))
+                .bearer_auth(token)
+                .header(reqwest::header::COOKIE, format!("{CSRF_COOKIE_NAME}={csrf}"))
+                .header(CSRF_HEADER_NAME, csrf)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{action} {id}");
+            if expected == reqwest::StatusCode::NOT_FOUND {
+                assert_eq!(response.json::<Value>().await.unwrap()["code"], "sidebar_scope_gone");
+            }
+        }
+    }
+
+    // A marker through the same FIFO bridge closes each stream of observations.
+    // Missing or misrouted events cannot masquerade as absence after an arbitrary delay.
+    for (user_id, stream, expected_count) in [(user, &mut owner_rx, 2), (other, &mut other_rx, 0)] {
+        app.services.event_bus.broadcast(WebSocketMessage::new(
+            "test.sidebarArchiveComplete",
+            json!({"user_id": user_id}),
+        ));
+        let mut updates = Vec::new();
+        loop {
+            let event = read_text(stream).await;
+            match event["name"].as_str() {
+                Some("test.sidebarArchiveComplete") => break,
+                Some("conversation.listChanged") => updates.push(event),
+                _ => {}
+            }
+        }
+        assert_eq!(updates.len(), expected_count, "updates sent to {user_id}");
+        for event in updates {
+            assert_eq!(event["data"]["user_id"], user);
+            assert_eq!(event["data"]["conversation_id"], conversation);
+            assert_eq!(event["data"]["action"], "updated");
+        }
+    }
+}
+
+#[tokio::test]
 async fn t4_1_unscoped_business_event_is_dropped_by_bridge() {
     let app = start_app().await;
     let token = sign_token(&app, "user-a").await;

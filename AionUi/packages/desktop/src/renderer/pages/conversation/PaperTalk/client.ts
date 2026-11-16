@@ -1,6 +1,6 @@
 import type { ChatFileRef } from '@/common/types/chatFile';
 import { emitter } from '@/renderer/utils/emitter';
-import { httpRequest } from '@/common/adapter/httpBridge';
+import { httpRequest, isBackendHttpError } from '@/common/adapter/httpBridge';
 
 export type Brief = {
   direction: string;
@@ -115,8 +115,24 @@ export const initialBrief: Brief = {
 };
 export const root = '/api/paper-talk';
 export const reportPath = (r: Report) => root + '/' + r.id;
-export const listReports = () =>
-  httpRequest<{ id: string; direction: string; conversation?: string | null }[]>('GET', root);
+export type ReportSummary = { id: string; direction: string; conversation?: string | null };
+export type ReportHistoryAction = 'archive' | 'unarchive' | 'delete';
+export const listReports = (archived = false) =>
+  httpRequest<ReportSummary[]>('GET', archived ? root + '?archived=true' : root);
+export function updateReportHistory(id: string, action: ReportHistoryAction) {
+  const path = root + '/' + encodeURIComponent(id);
+  return action === 'delete' ? httpRequest<void>('DELETE', path) : httpRequest<void>('POST', path + '/' + action);
+}
+export const activeReportKey = 'paper-talk.active';
+export function forgetActiveReport(id: string) {
+  if (localStorage.getItem(activeReportKey) === id) localStorage.removeItem(activeReportKey);
+}
+export function unavailableReport(error: unknown): 'archived' | 'missing' | undefined {
+  if (!isBackendHttpError(error)) return undefined;
+  if (error.code === 'CONVERSATION_ARCHIVED' || error.status === 410) return 'archived';
+  if (error.status === 404) return 'missing';
+  return undefined;
+}
 export type Sources = { discovery: string; fulltext: string; ranking: string };
 export const readSources = (): Sources =>
   JSON.parse(localStorage.getItem('paper-talk.sources') ?? '{"discovery":"","fulltext":"","ranking":""}') as Sources;
@@ -169,9 +185,20 @@ export function ensureConversation(report: Report, name: string): Promise<Report
           },
         });
     localStorage.setItem(bindingKey, conversation.id);
-    const bound = await httpRequest<Report>('POST', reportPath(report) + '/conversation', {
-      conversation: conversation.id,
-    });
+    let bound: Report;
+    try {
+      bound = await httpRequest<Report>('POST', reportPath(report) + '/conversation', {
+        conversation: conversation.id,
+      });
+    } catch (error) {
+      // A report can be deleted or archived after we read it and before we
+      // bind its conversation. Discard only the empty chat created this time.
+      if (!staged && unavailableReport(error)) {
+        localStorage.removeItem(bindingKey);
+        await httpRequest('DELETE', '/api/conversations/' + encodeURIComponent(conversation.id)).catch(() => {});
+      }
+      throw error;
+    }
     localStorage.removeItem(bindingKey);
     emitter.emit('chat.history.refresh');
     return bound;

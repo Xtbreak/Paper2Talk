@@ -126,6 +126,9 @@ pub struct Report {
     pub workspace: PathBuf,
     #[serde(default)]
     pub conversation: Option<String>,
+    /// Archive state for a report that has not yet been linked to a conversation.
+    #[serde(default)]
+    pub archived: bool,
     pub revision: u64,
     pub brief: Brief,
     pub papers: Vec<Paper>,
@@ -140,6 +143,19 @@ pub struct Report {
     pub turns: Vec<Turn>,
     #[serde(default)]
     pub cards: Vec<ChoiceCard>,
+}
+
+#[derive(Default, Deserialize)]
+pub struct HistoryQuery {
+    #[serde(default)]
+    pub archived: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryRow {
+    pub id: String,
+    pub direction: String,
+    pub conversation: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

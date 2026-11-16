@@ -945,6 +945,7 @@ dependencies = [
  "aionui-conversation",
  "aionui-db",
  "aionui-project",
+ "aionui-realtime",
  "async-trait",
  "axum",
  "base64",

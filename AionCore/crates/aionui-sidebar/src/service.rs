@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 use aionui_api_types::{
     ArchiveDeleteResult, ConversationResponse, MoveOrderRequest, OrderItemRefDto, RemoveProjectItem,
     RemoveProjectItemKind, RemoveProjectResult, SidebarGroup, SidebarItem, SidebarItemsResponse, SidebarResponse,
-    SidebarScope, SidebarTeamItem,
+    SidebarScope, SidebarTeamItem, WebSocketMessage,
 };
 use aionui_common::now_ms;
 use aionui_conversation::{is_temp_session_workspace, row_to_response_with_extra};
@@ -30,6 +30,7 @@ use aionui_db::{
     SidebarConversationThin, SidebarProjectMeta, SidebarTeamThin,
 };
 use aionui_project::canonical;
+use aionui_realtime::EventBroadcaster;
 
 use crate::ports::{ArchiveTeardownPorts, RemoveProjectPorts};
 use crate::types::{
@@ -47,6 +48,7 @@ const KIND_STANDARD: &str = "standard";
 pub struct SidebarService {
     sidebar: Arc<dyn ISidebarStore>,
     user_order: Arc<dyn IUserOrderStore>,
+    broadcaster: Arc<dyn EventBroadcaster>,
     /// Backend-managed data dir (conversation workspace root). Used both to
     /// detect temp workspaces (classification) and as the hydration `data_dir`.
     work_dir: PathBuf,
@@ -62,10 +64,16 @@ pub struct SidebarService {
 }
 
 impl SidebarService {
-    pub fn new(sidebar: Arc<dyn ISidebarStore>, user_order: Arc<dyn IUserOrderStore>, work_dir: PathBuf) -> Self {
+    pub fn new(
+        sidebar: Arc<dyn ISidebarStore>,
+        user_order: Arc<dyn IUserOrderStore>,
+        broadcaster: Arc<dyn EventBroadcaster>,
+        work_dir: PathBuf,
+    ) -> Self {
         Self {
             sidebar,
             user_order,
+            broadcaster,
             work_dir,
             remove_project_ports: Arc::new(OnceLock::new()),
             archive_teardown_ports: Arc::new(OnceLock::new()),
@@ -108,6 +116,15 @@ impl SidebarService {
 
     // -- Archive (D6: archiving unpins) --------------------------------------
 
+    /// Resolve current archive scopes for references kept by another feature.
+    pub async fn conversation_archive_scopes(
+        &self,
+        user_id: &str,
+        ids: &[&str],
+    ) -> Result<Vec<(String, ArchiveScope)>, SidebarError> {
+        Ok(self.sidebar.conversation_archive_scopes(user_id, ids).await?)
+    }
+
     /// Archive a conversation: move it into the archived slice, then drop any
     /// pinned row (D6 — an archived item is never pinned). A missing / foreign id
     /// is `ScopeGone` (404); the flip is otherwise idempotent for the slice.
@@ -122,7 +139,9 @@ impl SidebarService {
         // The archive flip is now committed; release the agent process the same
         // way delete does (best-effort — the row already moved slice).
         self.stop_conversation_best_effort(user_id, id).await;
-        self.unpin_item(user_id, OrderItemType::Conversation, id).await
+        let unpin = self.unpin_item(user_id, OrderItemType::Conversation, id).await;
+        self.broadcast_conversation_update(user_id, id);
+        unpin
     }
 
     /// Unarchive a conversation back into the active slice. Missing id →
@@ -132,7 +151,15 @@ impl SidebarService {
         if !self.sidebar.set_conversation_archived(user_id, id, None).await? {
             return Err(SidebarError::ScopeGone);
         }
+        self.broadcast_conversation_update(user_id, id);
         Ok(())
+    }
+
+    fn broadcast_conversation_update(&self, user_id: &str, conversation_id: &str) {
+        self.broadcaster.broadcast(WebSocketMessage::new(
+            "conversation.listChanged",
+            serde_json::json!({"user_id": user_id, "conversation_id": conversation_id, "action": "updated"}),
+        ));
     }
 
     /// Archive a team. The store cascades the flip to the team's member
@@ -450,6 +477,7 @@ impl SidebarService {
                     if let Err(err) = self.unpin_item(user_id, OrderItemType::Conversation, &conv.id).await {
                         tracing::warn!(conversation_id = %conv.id, error = %err, "archive_project: conversation unpin failed")
                     }
+                    self.broadcast_conversation_update(user_id, &conv.id);
                 }
                 Ok(false) => {
                     tracing::warn!(conversation_id = %conv.id, "archive_project: conversation vanished before archive")
@@ -484,8 +512,12 @@ impl SidebarService {
             }
         }
         for conv in &convs {
-            if let Err(err) = self.sidebar.set_conversation_archived(user_id, &conv.id, None).await {
-                tracing::warn!(conversation_id = %conv.id, error = %err, "unarchive_project: conversation unarchive failed")
+            match self.sidebar.set_conversation_archived(user_id, &conv.id, None).await {
+                Ok(true) => self.broadcast_conversation_update(user_id, &conv.id),
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(conversation_id = %conv.id, error = %err, "unarchive_project: conversation unarchive failed")
+                }
             }
         }
 

@@ -588,6 +588,7 @@ pub fn build_sidebar_state(services: &AppServices) -> SidebarRouterState {
     let service = SidebarService::new(
         sidebar_store,
         services.user_order_store.clone(),
+        services.event_bus.clone(),
         services.work_dir.join("conversations"),
     );
     SidebarRouterState {

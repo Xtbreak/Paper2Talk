@@ -96,6 +96,13 @@ pub struct SidebarProjectMeta {
 /// binding resolves to nothing and degrades to a dangling id (BR-24).
 #[async_trait::async_trait]
 pub trait ISidebarStore: Send + Sync {
+    /// Archive state of the requested conversations. Missing and foreign ids are omitted.
+    async fn conversation_archive_scopes(
+        &self,
+        user_id: &str,
+        ids: &[&str],
+    ) -> Result<Vec<(String, ArchiveScope)>, DbError>;
+
     /// All conversations for a user in the given archive slice, thin.
     async fn list_conversations_thin(
         &self,

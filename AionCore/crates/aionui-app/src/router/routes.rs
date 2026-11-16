@@ -309,7 +309,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     // Sidebar read + ordering routes protected by auth middleware
     let sidebar_authenticated =
-        sidebar_routes(states.sidebar).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+        sidebar_routes(states.sidebar.clone()).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // MCP routes protected by auth middleware
     let mcp_authenticated =
@@ -426,7 +426,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let router = router.merge(weixin_login_authenticated);
 
     let router = if services.identity_mode.is_local() {
-        router.merge(super::paper_talk::routes(services.data_dir.join("paper-talk")).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware)))
+        router.merge(
+            super::paper_talk::routes(
+                services.data_dir.join("paper-talk"),
+                states.sidebar.service,
+                services.conversation_service.clone(),
+                services.conversation_repo.clone(),
+            )
+            .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware)),
+        )
     } else {
         router.layer(middleware::from_fn_with_state(
             services.cookie_config.clone(),

@@ -62,8 +62,8 @@ describe('useAionrsMessage turn clock', () => {
     });
     await waitFor(() => {
       expect(result.current.hasHydratedRunningState).toBe(true);
+      expect(result.current.turnStartedAtMs).toBeNull();
     });
-    expect(result.current.turnStartedAtMs).toBeNull();
 
     // User sends a message at t=100s — the send box flips waitingResponse on.
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(100_000);
@@ -81,16 +81,16 @@ describe('useAionrsMessage turn clock', () => {
     await waitFor(() => {
       expect(result.current.hasHydratedRunningState).toBe(true);
       expect(result.current.running).toBe(false);
+      expect(result.current.turnStartedAtMs).toBeNull();
     });
-    expect(result.current.turnStartedAtMs).toBeNull();
 
     // Switch back — hydration restores processing state with the ORIGINAL start
     // time, so the elapsed indicator does not restart from zero.
     rerender({ id: 'conv-1' });
     await waitFor(() => {
       expect(result.current.running).toBe(true);
+      expect(result.current.turnStartedAtMs).toBe(100_000);
     });
-    expect(result.current.turnStartedAtMs).toBe(100_000);
     nowSpy.mockRestore();
   });
 
@@ -104,8 +104,8 @@ describe('useAionrsMessage turn clock', () => {
     const first = renderHook(() => useAionrsMessage('conv-2'));
     await waitFor(() => {
       expect(first.result.current.running).toBe(true);
+      expect(first.result.current.turnStartedAtMs).toBe(100_000);
     });
-    expect(first.result.current.turnStartedAtMs).toBe(100_000);
     first.unmount();
 
     // A fresh mount starts on an idle conversation, then navigates to conv-2.
@@ -115,14 +115,14 @@ describe('useAionrsMessage turn clock', () => {
     });
     await waitFor(() => {
       expect(result.current.hasHydratedRunningState).toBe(true);
+      expect(result.current.running).toBe(false);
     });
-    expect(result.current.running).toBe(false);
 
     rerender({ id: 'conv-2' });
     await waitFor(() => {
       expect(result.current.running).toBe(true);
+      expect(result.current.turnStartedAtMs).toBe(100_000);
     });
-    expect(result.current.turnStartedAtMs).toBe(100_000);
     nowSpy.mockRestore();
   });
 
@@ -153,9 +153,9 @@ describe('useAionrsMessage turn clock', () => {
     rerender({ id: 'conv-1' });
     await waitFor(() => {
       expect(result.current.hasHydratedRunningState).toBe(true);
+      expect(result.current.running).toBe(false);
+      expect(result.current.turnStartedAtMs).toBeNull();
     });
-    expect(result.current.running).toBe(false);
-    expect(result.current.turnStartedAtMs).toBeNull();
 
     // A later turn starts from its own send time, not the stale origin.
     const nowSpy2 = vi.spyOn(Date, 'now').mockReturnValue(500_000);

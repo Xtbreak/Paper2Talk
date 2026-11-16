@@ -47,6 +47,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     if (!pathname.startsWith('/settings')) {
       lastNonSettingsPathRef.current = `${pathname}${search}${hash}`;
     }
+    if (pathname === '/paper-talk') {
+      const history = new URLSearchParams(search).get('history');
+      if (history === 'active' || history === 'archived') setShowTools(false);
+    }
   }, [pathname, search, hash]);
 
   const handleNewChat = () => {

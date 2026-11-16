@@ -52,6 +52,36 @@ fn placeholders(count: usize) -> String {
 
 #[async_trait::async_trait]
 impl ISidebarStore for SqliteSidebarStore {
+    async fn conversation_archive_scopes(
+        &self,
+        user_id: &str,
+        ids: &[&str],
+    ) -> Result<Vec<(String, ArchiveScope)>, DbError> {
+        let mut scopes = Vec::with_capacity(ids.len());
+        // Keep one slot for the owner in SQLite's legacy 999-parameter limit.
+        for chunk in ids.chunks(998) {
+            let sql = format!(
+                "SELECT id, archived_at IS NOT NULL AS archived FROM conversations WHERE user_id = ? AND id IN ({})",
+                placeholders(chunk.len())
+            );
+            let mut query = sqlx::query_as::<_, (String, bool)>(&sql).bind(user_id);
+            for id in chunk {
+                query = query.bind(id);
+            }
+            scopes.extend(query.fetch_all(&self.pool).await?.into_iter().map(|(id, archived)| {
+                (
+                    id,
+                    if archived {
+                        ArchiveScope::Archived
+                    } else {
+                        ArchiveScope::Active
+                    },
+                )
+            }));
+        }
+        Ok(scopes)
+    }
+
     async fn list_conversations_thin(
         &self,
         user_id: &str,

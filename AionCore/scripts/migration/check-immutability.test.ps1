@@ -83,20 +83,20 @@ function Invoke-InRepo {
 }
 
 function New-CaseRepo {
-    param([string] $Name)
+    param([string] $Name, [string] $MigrationRelPath = "crates/aionui-db/migrations")
 
     $dir = Join-Path $tmpdir $Name
-    New-Item -ItemType Directory -Force -Path (Join-Path $dir "crates/aionui-db/migrations") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir $MigrationRelPath) | Out-Null
 
     Push-Location $dir
     try {
         Invoke-Native git init -q -b main
         Invoke-Native git config user.email test@example.com
         Invoke-Native git config user.name "Migration Test"
-        Set-Content -LiteralPath "crates/aionui-db/migrations/001_initial_schema.sql" -Value "-- 001 initial"
-        Set-Content -LiteralPath "crates/aionui-db/migrations/002_data_fix.sql" -Value "-- 002 data fix"
-        Set-Content -LiteralPath "crates/aionui-db/migrations/manual_fixture.sql" -Value "-- auxiliary sql"
-        Invoke-Native git add crates/aionui-db/migrations
+        Set-Content -LiteralPath "$MigrationRelPath/001_initial_schema.sql" -Value "-- 001 initial"
+        Set-Content -LiteralPath "$MigrationRelPath/002_data_fix.sql" -Value "-- 002 data fix"
+        Set-Content -LiteralPath "$MigrationRelPath/manual_fixture.sql" -Value "-- auxiliary sql"
+        Invoke-Native git add $MigrationRelPath
         Invoke-Native git commit -q -m "seed migrations"
         Invoke-Native git checkout -q -b feature
     } finally {
@@ -133,6 +133,16 @@ try {
         AIONCORE_MIGRATION_BASE_REF = "main"
         AIONCORE_ALLOW_MAIN_MIGRATION_EDIT = "1"
     }
+
+    $monorepoMigrations = "AionCore/crates/aionui-db/migrations"
+    $monorepo = New-CaseRepo "monorepo" $monorepoMigrations
+    $monorepoCore = Join-Path $monorepo "AionCore"
+    Set-Content -LiteralPath (Join-Path $monorepo "$monorepoMigrations/003_new_change.sql") -Value "-- 003 new migration"
+    Invoke-InRepo $monorepoCore 0 "Migration immutability check passed" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Add-Content -LiteralPath (Join-Path $monorepo "$monorepoMigrations/001_initial_schema.sql") -Value "-- modified"
+    Invoke-InRepo $monorepoCore 1 "Existing migration files from main must not be modified or deleted" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
+    Set-Content -LiteralPath (Join-Path $monorepo "$monorepoMigrations/002_duplicate_change.sql") -Value "-- duplicate 002 migration"
+    Invoke-InRepo $monorepoCore 1 "Duplicate database migration versions are not allowed" @{ AIONCORE_MIGRATION_BASE_REF = "main" }
 
     Write-Output "Migration immutability script tests passed"
 } finally {

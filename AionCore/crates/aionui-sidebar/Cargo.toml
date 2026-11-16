@@ -13,6 +13,7 @@ aionui-db.workspace = true
 aionui-conversation.workspace = true
 # Lexical path canonicalization for the read-side path-merge match (no fs).
 aionui-project.workspace = true
+aionui-realtime.workspace = true
 axum.workspace = true
 base64.workspace = true
 # Repeated `win` query params + percent-decoded cursors: parse the raw query with
